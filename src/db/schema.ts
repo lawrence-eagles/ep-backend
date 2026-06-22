@@ -21,9 +21,10 @@ import {
   uuid,
   integer,
   index,
+  uniqueIndex,
   primaryKey,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, InferSelectModel, InferInsertModel } from "drizzle-orm";
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(), // from Better Auth
@@ -106,6 +107,12 @@ export const sources = pgTable("sources", {
   name: text("name").notNull(),
   url: text("url").notNull().unique(),
 });
+
+// ✅ What you SELECT from DB
+export type Source = InferSelectModel<typeof sources>;
+
+// ✅ What you INSERT into DB
+export type NewSource = InferInsertModel<typeof sources>;
 
 // Category table
 // db/schema/categories.ts
