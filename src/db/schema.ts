@@ -17,30 +17,89 @@ import {
   pgTable,
   text,
   timestamp,
-  jsonb,
   uuid,
   integer,
+  boolean,
   index,
   uniqueIndex,
   primaryKey,
 } from "drizzle-orm/pg-core";
 import { relations, InferSelectModel, InferInsertModel } from "drizzle-orm";
 
+// BETTER AUTH GENERATED TABLES START
 export const user = pgTable("user", {
-  id: text("id").primaryKey(), // from Better Auth
-
-  email: text("email").notNull(),
-  name: text("name"),
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
   image: text("image"),
-
-  // 🔥 YOUR APP FIELDS
-  username: text("username"),
-  avatarUrl: text("avatar_url"),
-
-  interests: jsonb("interests").$type<string[]>(),
-
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at")
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull(),
 });
+
+export const session = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+  },
+  (table) => [index("session_userId_idx").on(table.userId)],
+);
+
+export const account = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("account_userId_idx").on(table.userId)],
+);
+
+export const verification = pgTable(
+  "verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+// BETTER AUTH GENERATED TABLES END.
 
 // Posts Table
 // db/schema/posts.ts
@@ -261,21 +320,45 @@ export const userBehavior = pgTable(
     // ✅ Composite Primary Key
     pk: primaryKey({ columns: [t.userId, t.categoryId] }),
 
-    // ✅ Index for fast JOINs (your requested one)
+    // ✅ Existing composite index for JOIN performance
     idxCategoryUser: index("idx_user_behavior_category_user").on(
       t.categoryId,
       t.userId,
     ),
+
+    // ✅ NEW: Single-column index on categoryId (as requested)
+    idxCategory: index("idx_user_behavior_category").on(t.categoryId),
   }),
 );
 
-// ADD THE INDEX BELOW TO USER_BEHAVIOR TABLE
-// index("idx_user_behavior_category").on(t.categoryId)
-
 // Relations
 
-// User Relations
+// BETTER AUTH GENERATED RELATIONS START
+// export const userRelations = relations(user, ({ many }) => ({
+//   sessions: many(session),
+//   accounts: many(account),
+// }));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
+  }),
+}));
+
+// BETTER AUTH GENERATED RELATIONS END.
+
+// User Relations UPDATED WITH BETTER AUTH RELATIONS BY ADDING -- sessions and account relations
 export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
   likes: many(likes),
   bookmarks: many(bookmarks),
   comments: many(comments),
@@ -306,32 +389,6 @@ export const categoriesRelations = relations(categories, ({ many }) => ({
   followers: many(follows),
   behavior: many(userBehavior),
 }));
-
-// 🔁 3. REQUIRED REVERSE RELATIONS (IMPORTANT)
-
-// If you don’t add these, Drizzle won’t fully work.
-
-// POSTS → CATEGORY
-// inside postsRelations
-
-// category: one(categories, {
-//   fields: [posts.categoryId],
-//   references: [categories.id],
-// }),
-// 🔔 FOLLOWS → CATEGORY
-// db/relations/follows.ts
-
-// category: one(categories, {
-//   fields: [follows.categoryId],
-//   references: [categories.id],
-// }),
-// 🧠 USER BEHAVIOR → CATEGORY
-// db/relations/userBehavior.ts
-
-// category: one(categories, {
-//   fields: [userBehavior.categoryId],
-//   references: [categories.id],
-// }),
 
 // Source Relations generated by copilot
 export const sourcesRelations = relations(sources, ({ many }) => ({
@@ -385,13 +442,6 @@ export const bookmarksRelations = relations(bookmarks, ({ one }) => ({
   }),
 }));
 
-// Add reverse relations
-// in userRelations
-// bookmarks: many(bookmarks)
-
-// in postsRelations
-// bookmarks: many(bookmarks)
-
 // Follows Relations
 // db/relations/follows.ts
 export const followsRelations = relations(follows, ({ one }) => ({
@@ -406,13 +456,6 @@ export const followsRelations = relations(follows, ({ one }) => ({
   }),
 }));
 
-// Reverse relations
-// userRelations
-// follows: many(follows)
-
-// categoriesRelations
-// followers: many(follows)
-
 // user Behavior Relation
 // db/relations/userBehavior.ts
 export const userBehaviorRelations = relations(userBehavior, ({ one }) => ({
@@ -426,10 +469,3 @@ export const userBehaviorRelations = relations(userBehavior, ({ one }) => ({
     references: [categories.id],
   }),
 }));
-
-// 🔁 Reverse relations
-// userRelations
-// behavior: many(userBehavior)
-
-// categoriesRelations
-// behavior: many(userBehavior)
