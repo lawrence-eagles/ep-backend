@@ -15,13 +15,17 @@
   "type": "commonjs",
   "dependencies": {
     "better-auth": "^1.6.20",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "crypto": "^1.0.1",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "inngest": "^4.7.0",
+    "p-limit": "^7.3.0",
     "pg": "^8.22.0",
     "redis": "^6.0.0",
+    "rss-parser": "^3.13.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
