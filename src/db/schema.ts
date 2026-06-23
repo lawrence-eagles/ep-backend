@@ -17,30 +17,90 @@ import {
   pgTable,
   text,
   timestamp,
-  jsonb,
   uuid,
   integer,
+  boolean,
   index,
   uniqueIndex,
   primaryKey,
+  AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { relations, InferSelectModel, InferInsertModel } from "drizzle-orm";
 
+// BETTER AUTH GENERATED TABLES START
 export const user = pgTable("user", {
-  id: text("id").primaryKey(), // from Better Auth
-
-  email: text("email").notNull(),
-  name: text("name"),
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
   image: text("image"),
-
-  // 🔥 YOUR APP FIELDS
-  username: text("username"),
-  avatarUrl: text("avatar_url"),
-
-  interests: jsonb("interests").$type<string[]>(),
-
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at")
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull(),
 });
+
+export const session = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+  },
+  (table) => [index("session_userId_idx").on(table.userId)],
+);
+
+export const account = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("account_userId_idx").on(table.userId)],
+);
+
+export const verification = pgTable(
+  "verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+// BETTER AUTH GENERATED TABLES END.
 
 // Posts Table
 // db/schema/posts.ts
@@ -52,15 +112,24 @@ export const posts = pgTable(
 
     title: text("title").notNull(),
 
-    // 🔥 UNIQUE + INDEXED LOOKUP (slug-based routing)
+    // 🔥 UNIQUE (already indexed internally)
     slug: text("slug").notNull().unique(),
 
     description: text("description"),
     url: text("url").notNull(),
     imageUrl: text("image_url"),
 
-    sourceId: uuid("source_id").references(() => sources.id),
-    categoryId: uuid("category_id").references(() => categories.id),
+    sourceId: uuid("source_id")
+      .notNull()
+      .references(() => sources.id, {
+        onDelete: "cascade",
+      }),
+
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, {
+        onDelete: "cascade",
+      }),
 
     // 🔥 CORE RANKING SIGNAL
     score: integer("score").default(0),
@@ -74,30 +143,30 @@ export const posts = pgTable(
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => ({
-    // 🔥 SLUG LOOKUP INDEX (critical for GET /:slug)
-    idxPostsSlug: index("idx_posts_slug").on(t.slug),
-
-    // 🔥 FEED / RANKING INDEX
-    idxPostsTrending: index("idx_posts_trending").on(
-      t.score,
-      t.createdAt,
-      t.id,
+  (t) => [
+    // 🔥 FEED / TRENDING (correct sort order)
+    index("idx_posts_trending").on(
+      t.score.desc(),
+      t.createdAt.desc(),
+      t.id.desc(),
     ),
 
-    // 🔥 PAGINATION INDEX (cursor-based)
-    idxPostsCreatedAtId: index("idx_posts_created_at_id").on(t.createdAt, t.id),
+    // 🔥 PAGINATION (cursor-based)
+    index("idx_posts_created_at_id").on(t.createdAt.desc(), t.id.desc()),
 
     // 🔥 FILTERING
-    idxPostsCategoryId: index("idx_posts_category_id").on(t.categoryId),
-    idxPostsSourceId: index("idx_posts_source_id").on(t.sourceId),
+    index("idx_posts_category_id").on(t.categoryId),
+    index("idx_posts_source_id").on(t.sourceId),
+
+    // 🔥 FILTER + SORT (VERY IMPORTANT)
+    index("idx_posts_category_created").on(t.categoryId, t.createdAt.desc()),
 
     // 🔥 SORTING
-    idxPostsScore: index("idx_posts_score").on(t.score),
+    index("idx_posts_score").on(t.score.desc()),
 
-    // 🔥 ANALYTICS / TRENDING BY ENGAGEMENT
-    idxPostsClicks: index("idx_posts_clicks").on(t.clicks),
-  }),
+    // 🔥 ANALYTICS
+    index("idx_posts_clicks").on(t.clicks),
+  ],
 );
 
 // Source Table
@@ -124,22 +193,17 @@ export const categories = pgTable(
     name: text("name").notNull(), // e.g. "Technology"
     slug: text("slug").notNull(), // e.g. "technology"
 
-    createdAt: timestamp("created_at").defaultNow(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => ({
-    nameIdx: uniqueIndex("categories_name_idx").on(t.name),
-    slugIdx: uniqueIndex("categories_slug_idx").on(t.slug),
-  }),
+  (t) => [
+    // 🔥 UNIQUE NAME (case-sensitive — normalize in app layer)
+    uniqueIndex("categories_name_idx").on(t.name),
+
+    // 🔥 UNIQUE SLUG (used for routing)
+    uniqueIndex("categories_slug_idx").on(t.slug),
+  ],
 );
 
-// /db/schema/interactions.ts
-
-// Optional (Highly Recommended Upgrades)
-// 1. Add comment threading index
-// index("idx_comments_parent_id").on(t.parentId)
-// 2. Add createdAt index (for sorting comments)
-// index("idx_comments_post_created").on(t.postId, t.createdAt)
-// WHEN PROMPTING CLAUDE REMEMBER TO TELL IT TO ADD ALL NECESSARY INDEXES
 // =========================
 // ❤️ LIKES TABLE
 // =========================
@@ -154,18 +218,22 @@ export const likes = pgTable(
       .notNull()
       .references(() => posts.id, { onDelete: "cascade" }),
   },
-  (t) => ({
-    // ✅ Composite Primary Key (auto-indexed)
-    pk: primaryKey({ columns: [t.userId, t.postId] }),
+  (t) => [
+    // ✅ Composite Primary Key (enforces uniqueness + index)
+    primaryKey({ columns: [t.userId, t.postId] }),
 
-    // ✅ Needed for post-based queries (counts, joins, trending)
-    idxLikesPostId: index("idx_likes_post_id").on(t.postId),
-  }),
+    // ✅ Fast lookup for "who liked this post"
+    index("idx_likes_post_id").on(t.postId),
+
+    // ✅ Fast lookup for "posts liked by user"
+    index("idx_likes_user_id").on(t.userId),
+  ],
 );
 
 // =========================
 // 🔖 BOOKMARKS TABLE
 // =========================
+
 export const bookmarks = pgTable(
   "bookmarks",
   {
@@ -177,15 +245,22 @@ export const bookmarks = pgTable(
       .notNull()
       .references(() => posts.id, { onDelete: "cascade" }),
   },
-  (t) => ({
-    // ✅ Composite Primary Key (ALREADY indexed)
-    pk: primaryKey({ columns: [t.userId, t.postId] }),
-  }),
+  (t) => [
+    // ✅ Composite Primary Key (enforces uniqueness + index)
+    primaryKey({ columns: [t.userId, t.postId] }),
+
+    // ✅ Fast lookup: all bookmarks for a post
+    index("idx_bookmarks_post_id").on(t.postId),
+
+    // ✅ Fast lookup: all bookmarks for a user (optional but recommended)
+    index("idx_bookmarks_user_id").on(t.userId),
+  ],
 );
 
 // =========================
 // 💬 COMMENTS TABLE
 // =========================
+
 export const comments = pgTable(
   "comments",
   {
@@ -197,85 +272,131 @@ export const comments = pgTable(
       onDelete: "set null",
     }),
 
-    postId: uuid("post_id").references(() => posts.id, {
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => posts.id, {
+        onDelete: "cascade",
+      }),
+
+    // 🔥 FIX: break circular inference
+    // 👉 This explicitly tells TypeScript: "Don’t try to infer this — it returns a column"
+    parentId: uuid("parent_id").references((): AnyPgColumn => comments.id, {
       onDelete: "cascade",
     }),
 
-    parentId: uuid("parent_id"),
-
-    createdAt: timestamp("created_at").defaultNow(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => ({
-    idxCommentsPostId: index("idx_comments_post_id").on(t.postId),
-
-    // 🔥 NEW
-    idxCommentsParentId: index("idx_comments_parent_id").on(t.parentId),
-
-    idxCommentsPostCreated: index("idx_comments_post_created").on(
-      t.postId,
-      t.createdAt,
-    ),
-  }),
+  (t) => [
+    index("idx_comments_post_id").on(t.postId),
+    index("idx_comments_parent_id").on(t.parentId),
+    index("idx_comments_post_created").on(t.postId, t.createdAt),
+    index("idx_comments_user_id").on(t.userId),
+  ],
 );
 
 // Follows Table
 // db/schema/follows.ts
+
 export const follows = pgTable(
   "follows",
   {
     userId: text("user_id")
       .notNull()
-      .references(() => user.id),
+      .references(() => user.id, {
+        onDelete: "cascade", // ✅ prevent orphan follows
+      }),
 
     categoryId: uuid("category_id")
       .notNull()
-      .references(() => categories.id),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.userId, t.categoryId] }),
+      .references(() => categories.id, {
+        onDelete: "cascade", // ✅ prevent orphan follows
+      }),
 
-    // 🔥 ADD THIS
-    idxFollowsCategoryUser: index("idx_follows_category_user").on(
-      t.categoryId,
-      t.userId,
-    ),
-  }),
+    // ✅ Useful for sorting, analytics, debugging
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // ✅ Composite PK (also unique + indexed)
+    primaryKey({ columns: [t.userId, t.categoryId] }),
+
+    // ✅ Query: "followers of category"
+    index("idx_follows_category_user").on(t.categoryId, t.userId),
+
+    // ✅ Query: "categories followed by user"
+    index("idx_follows_user_category").on(t.userId, t.categoryId),
+  ],
 );
 
 // User behaviour Table
 // db/schema/userBehavior.ts
+
 export const userBehavior = pgTable(
   "user_behavior",
   {
     userId: text("user_id")
       .notNull()
-      .references(() => user.id),
+      .references(() => user.id, {
+        onDelete: "cascade", // ✅ prevent orphan rows
+      }),
 
     categoryId: uuid("category_id")
       .notNull()
-      .references(() => categories.id),
+      .references(() => categories.id, {
+        onDelete: "cascade", // ✅ prevent orphan rows
+      }),
 
-    score: integer("score").default(0),
+    // ✅ Must be NOT NULL for scoring math
+    score: integer("score").default(0).notNull(),
+
+    // ✅ NEW: when relationship was first created
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+
+    // ✅ Useful for ranking/decay systems
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* `@__PURE__` */ new Date())
+      .notNull(),
   },
-  (t) => ({
+  (t) => [
     // ✅ Composite Primary Key
-    pk: primaryKey({ columns: [t.userId, t.categoryId] }),
+    primaryKey({ columns: [t.userId, t.categoryId] }),
 
-    // ✅ Index for fast JOINs (your requested one)
-    idxCategoryUser: index("idx_user_behavior_category_user").on(
-      t.categoryId,
-      t.userId,
-    ),
-  }),
+    // ✅ Category-based queries (who is interested in X)
+    index("idx_user_behavior_category_user").on(t.categoryId, t.userId),
+
+    // ✅ User-based queries (what user likes)
+    index("idx_user_behavior_user_category").on(t.userId, t.categoryId),
+  ],
 );
-
-// ADD THE INDEX BELOW TO USER_BEHAVIOR TABLE
-// index("idx_user_behavior_category").on(t.categoryId)
 
 // Relations
 
-// User Relations
+// BETTER AUTH GENERATED RELATIONS START
+// export const userRelations = relations(user, ({ many }) => ({
+//   sessions: many(session),
+//   accounts: many(account),
+// }));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
+  }),
+}));
+
+// BETTER AUTH GENERATED RELATIONS END.
+
+// User Relations UPDATED WITH BETTER AUTH RELATIONS BY ADDING -- sessions and account relations
 export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
   likes: many(likes),
   bookmarks: many(bookmarks),
   comments: many(comments),
@@ -306,32 +427,6 @@ export const categoriesRelations = relations(categories, ({ many }) => ({
   followers: many(follows),
   behavior: many(userBehavior),
 }));
-
-// 🔁 3. REQUIRED REVERSE RELATIONS (IMPORTANT)
-
-// If you don’t add these, Drizzle won’t fully work.
-
-// POSTS → CATEGORY
-// inside postsRelations
-
-// category: one(categories, {
-//   fields: [posts.categoryId],
-//   references: [categories.id],
-// }),
-// 🔔 FOLLOWS → CATEGORY
-// db/relations/follows.ts
-
-// category: one(categories, {
-//   fields: [follows.categoryId],
-//   references: [categories.id],
-// }),
-// 🧠 USER BEHAVIOR → CATEGORY
-// db/relations/userBehavior.ts
-
-// category: one(categories, {
-//   fields: [userBehavior.categoryId],
-//   references: [categories.id],
-// }),
 
 // Source Relations generated by copilot
 export const sourcesRelations = relations(sources, ({ many }) => ({
@@ -385,13 +480,6 @@ export const bookmarksRelations = relations(bookmarks, ({ one }) => ({
   }),
 }));
 
-// Add reverse relations
-// in userRelations
-// bookmarks: many(bookmarks)
-
-// in postsRelations
-// bookmarks: many(bookmarks)
-
 // Follows Relations
 // db/relations/follows.ts
 export const followsRelations = relations(follows, ({ one }) => ({
@@ -405,13 +493,6 @@ export const followsRelations = relations(follows, ({ one }) => ({
     references: [categories.id],
   }),
 }));
-
-// Reverse relations
-// userRelations
-// follows: many(follows)
-
-// categoriesRelations
-// followers: many(follows)
 
 // user Behavior Relation
 // db/relations/userBehavior.ts
@@ -427,9 +508,4 @@ export const userBehaviorRelations = relations(userBehavior, ({ one }) => ({
   }),
 }));
 
-// 🔁 Reverse relations
-// userRelations
-// behavior: many(userBehavior)
-
-// categoriesRelations
-// behavior: many(userBehavior)
+export const schema = { user, session, account, verification };

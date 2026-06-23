@@ -3,7 +3,7 @@ import { categories } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 // ── Keyword map ───────────────────────────────────────────────────────────────
-
+// Ensure you always store: name → normalized (e.g. Title Case or lowercase)
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Technology: [
     "ai",
