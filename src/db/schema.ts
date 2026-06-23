@@ -352,7 +352,10 @@ export const userBehavior = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
 
     // ✅ Useful for ranking/decay systems
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* `@__PURE__` */ new Date())
+      .notNull(),
   },
   (t) => [
     // ✅ Composite Primary Key

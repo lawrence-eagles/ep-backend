@@ -11,7 +11,9 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),
   INNGEST_EVENT_KEY: z.string().min(1),
   INNGEST_SIGNING_KEY: z.string().min(1),
-  BETTER_AUTH_SECRET: z.string().min(1),
+  BETTER_AUTH_SECRET: z
+    .string()
+    .min(32, { message: "BETTER_AUTH_SECRET must be at least 32 characters" }),
   BETTER_AUTH_URL: z.url(),
   FACEBOOK_CLIENT_ID: z.string().min(1),
   FACEBOOK_CLIENT_SECRET: z.string().min(1),

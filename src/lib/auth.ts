@@ -1,14 +1,15 @@
 import "dotenv/config";
 import { betterAuth } from "better-auth";
-import { nextCookies } from "better-auth/next-js";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "../db"; // your drizzle instance
 import { schema } from "../db/schema"; // the schema exported as const.
 import { getEnv } from "../lib/env";
 
 const env = getEnv();
+const frontendOrigin = new URL(env.FRONTEND_URL).origin;
 
 export const auth = betterAuth({
+  trustedOrigins: [frontendOrigin],
   socialProviders: {
     facebook: {
       clientId: env.FACEBOOK_CLIENT_ID,
@@ -21,11 +22,10 @@ export const auth = betterAuth({
   },
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true,
+    // requireEmailVerification: true,
   },
   database: drizzleAdapter(db, {
     provider: "pg", // or "mysql", "sqlite"
     schema,
   }),
-  plugins: [nextCookies()], // make sure this is the last plugin in the array
 });
