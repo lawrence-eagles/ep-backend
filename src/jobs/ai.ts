@@ -51,6 +51,12 @@ async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      const retryable =
+        typeof err === "object" &&
+        err !== null &&
+        "retryable" in err &&
+        (err as { retryable?: boolean }).retryable === true;
+      if (!retryable) throw err;
       if (attempt < retries - 1) {
         await new Promise((r) => setTimeout(r, delayMs * Math.pow(2, attempt)));
       }
@@ -97,8 +103,8 @@ Summarize each article in exactly 4 clear, factual, SEO-friendly sentences.
 Return ONLY a valid JSON array. No markdown, no explanation, no code fences.
 The array must have exactly ${contents.length} objects in this exact shape:
 [
-  { "index": 1, "summary": "Sentence one. Sentence two. Sentence three." },
-  { "index": 2, "summary": "Sentence one. Sentence two. Sentence three." }
+  { "index": 1, "summary": "Sentence one. Sentence two. Sentence three. Sentence four." },
+  { "index": 2, "summary": "Sentence one. Sentence two. Sentence three. Sentence four." }
 ]
 `.trim();
 
@@ -131,7 +137,11 @@ The array must have exactly ${contents.length} objects in this exact shape:
 
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(`OpenAI API error ${response.status}: ${body}`);
+        const err = new Error(
+          `OpenAI API error ${response.status}: ${body}`,
+        ) as Error & { retryable?: boolean };
+        err.retryable = [429, 500, 502, 503, 504].includes(response.status);
+        throw err;
       }
 
       const data = (await response.json()) as OpenAIResponse;

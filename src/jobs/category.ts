@@ -64,7 +64,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
     "diplomacy",
     "sanctions",
   ],
-  Cryto: ["Bitcoin", "Etherum"],
+  Crypto: ["bitcoin", "ethereum"],
 };
 
 // ── Slugify ───────────────────────────────────────────────────────────────────
@@ -86,10 +86,11 @@ function classifyText(text: string): string {
   let bestScore = 0;
 
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-    const score = keywords.reduce(
-      (acc, word) => acc + (lower.includes(word) ? 1 : 0),
-      0,
-    );
+    const score = keywords.reduce((acc, word) => {
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(`\\b${escaped}\\b`, "i");
+      return acc + (pattern.test(text) ? 1 : 0);
+    }, 0);
 
     if (score > bestScore) {
       bestScore = score;

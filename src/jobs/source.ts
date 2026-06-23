@@ -3,7 +3,8 @@ import { sources, type Source, NewSource } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 // ── Feed registry — single source of truth ────────────────────────────────────
-
+// Use HTTPS feed URLs to prevent in-transit tampering. MAKE SURE TO USE HTTPS
+// Keeping registry entries on HTTP weakens ingestion integrity and can let upstream content be modified on the network path.
 export const FEEDS = [
   { name: "CNN", url: "http://rss.cnn.com/rss/edition.rss" },
   { name: "BBC", url: "http://feeds.bbci.co.uk/news/rss.xml" },

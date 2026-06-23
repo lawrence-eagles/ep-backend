@@ -2,7 +2,6 @@ import Parser from "rss-parser";
 import pLimit from "p-limit";
 import { z } from "zod";
 import { inArray } from "drizzle-orm";
-import { cron } from "inngest";
 import { inngest } from "../lib/inngest";
 import { db } from "../db";
 import { posts } from "../db/schema";
@@ -11,7 +10,7 @@ import type { InngestFunction } from "inngest";
 import { FEEDS, getOrCreateSource } from "./source";
 import { scrapeArticle } from "./scraper";
 import { batchSummarize } from "./ai";
-import { generateSlug, ensureUniqueSlug } from "../utils/slug";
+import { insertPostWithUniqueSlug } from "../utils/slug";
 import { detectCategoryId } from "./category";
 import { calculatePostScore } from "./score";
 
@@ -29,6 +28,35 @@ const MAX_ITEMS_PER_FEED = 20;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+function isSafeUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+
+    const hostname = url.hostname;
+
+    if (hostname === "localhost") return false;
+
+    const ipv4 = hostname.match(/^(?:\d{1,3}\.){3}\d{1,3}$/);
+
+    if (ipv4) {
+      const parts = hostname.split(".").map(Number);
+      const [a, b] = parts;
+
+      if (a === 127) return false;
+      if (a === 10) return false;
+      if (a === 192 && b === 168) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+      if (a === 169 && b === 254) return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeUrl(url: string) {
   try {
     const u = new URL(url);
@@ -45,7 +73,7 @@ const getDedupeKey = (url: string) => `seen:article:${normalizeUrl(url)}`;
 function safeDate(input?: string | null): string | null {
   if (!input) return null;
   const d = new Date(input);
-  return isNaN(d.getTime()) ? null : d.toISOString(); // ✅ KEY CHANGE
+  return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -61,9 +89,17 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 const RssItemSchema = z.object({
   title: z.string().min(1),
-  link: z.string().url(),
+  link: z.string().refine(isSafeUrl, {
+    message: "Unsafe URL",
+  }),
   contentSnippet: z.string().optional(),
-  enclosure: z.object({ url: z.string().url() }).optional(),
+  enclosure: z
+    .object({
+      url: z.string().refine(isSafeUrl, {
+        message: "Unsafe enclosure URL",
+      }),
+    })
+    .optional(),
   pubDate: z.string().optional(),
 });
 
@@ -90,7 +126,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
     id: "fetch-news-production",
     name: "Fetch News from RSS Feeds",
     concurrency: { limit: 1 },
-    triggers: [cron("0 */12 * * *")],
+    triggers: { cron: "0 */12 * * *" },
     retries: 2,
   },
 
@@ -132,51 +168,12 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       return { processed: 0 };
     }
 
-    // ── STEP 2: Deduplication ───────────────────────────────────────────
+    // ── STEP 2: Deduplication (READ ONLY) ───────────────────────────────
 
     const uniqueArticles: RawArticle[] = await step.run(
       "deduplicate",
       async () => {
-        const multi = redis.multi();
-
-        rawArticles.forEach((a) => {
-          multi.set(getDedupeKey(a.url), "1", {
-            NX: true,
-            EX: DEDUPE_TTL_SECONDS,
-          });
-        });
-
-        const multiResults = await multi.exec();
-
-        const redisNew = rawArticles.filter((_, i) => {
-          const r = multiResults?.[i];
-
-          if (r == null) return false;
-
-          if (Array.isArray(r)) {
-            const [err, value] = r;
-
-            if (err) {
-              // optionally log this
-              return false;
-            }
-
-            if (typeof value === "string") return value === "OK";
-            if (typeof value === "number") return value === 1;
-
-            return false;
-          }
-
-          if (typeof r === "string") return r === "OK";
-          if (typeof r === "number") return r === 1;
-
-          return false;
-        });
-
-        if (!redisNew.length) return [];
-
-        // chunk DB query
-        const urls = redisNew.map((a) => a.url);
+        const urls = rawArticles.map((a) => a.url);
         const existingSet = new Set<string>();
 
         const chunkSize = 100;
@@ -190,12 +187,9 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           rows.forEach((r) => existingSet.add(r.url));
         }
 
-        const fresh = redisNew.filter((a) => !existingSet.has(a.url));
+        const fresh = rawArticles.filter((a) => !existingSet.has(a.url));
 
-        logger.info(
-          `Dedupe: ${rawArticles.length} → ${redisNew.length} → ${fresh.length}`,
-        );
-
+        logger.info(`Dedupe: ${rawArticles.length} → ${fresh.length}`);
         return fresh;
       },
     );
@@ -262,18 +256,25 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
         const limit = pLimit(3);
 
         const results = await Promise.allSettled(
-          batches.map((b) => limit(() => batchSummarize(b))),
+          batches.map((batch, batchIndex) =>
+            limit(async () => ({
+              batchIndex,
+              summaries: await batchSummarize(batch),
+            })),
+          ),
         );
 
-        const summaries = results
-          .filter(
-            (r): r is PromiseFulfilledResult<any[]> => r.status === "fulfilled",
-          )
-          .flatMap((r) => r.value);
+        const summaries: Array<{ summary: string } | undefined> = Array(
+          scrapedArticles.length,
+        ).fill(undefined);
 
-        if (summaries.length !== scrapedArticles.length) {
-          logger.warn("Summary mismatch — using fallbacks");
-        }
+        results.forEach((r) => {
+          if (r.status !== "fulfilled") return;
+          const start = r.value.batchIndex * AI_BATCH_SIZE;
+          r.value.summaries.forEach((s, i) => {
+            summaries[start + i] = s;
+          });
+        });
 
         return scrapedArticles.map((article, i): EnrichedArticle => {
           const fallback = article.content
@@ -289,7 +290,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       },
     );
 
-    // ── STEP 5: Save ────────────────────────────────────────────────────
+    // ── STEP 5: Save + Dedupe Commit ────────────────────────────────────
 
     const saveResults = await step.run("save-to-database", async () => {
       const limit = pLimit(SAVE_CONCURRENCY);
@@ -297,8 +298,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       const results = await Promise.allSettled(
         enrichedArticles.map((article) =>
           limit(async () => {
-            const [slug, source, categoryId] = await Promise.all([
-              ensureUniqueSlug(generateSlug(article.title)),
+            const [source, categoryId] = await Promise.all([
               getOrCreateSource(article.feedUrl),
               detectCategoryId(`${article.title} ${article.content}`),
             ]);
@@ -307,35 +307,42 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               title: article.title,
               content: article.content,
               hasImage: !!article.imageUrl,
-              // createdAt: article.createdAt,
               createdAt: article.createdAt ? new Date(article.createdAt) : null,
             });
 
-            await db
-              .insert(posts)
-              .values({
-                title: article.title,
-                slug,
-                description: article.summary,
-                url: article.url,
-                imageUrl: article.imageUrl,
-                sourceId: source.id,
-                categoryId,
-                score,
-                // createdAt: article.createdAt ?? new Date(),
-                createdAt: article.createdAt
-                  ? new Date(article.createdAt)
-                  : new Date(),
-              })
-              .onConflictDoNothing({ target: posts.url });
+            // ✅ SAFE INSERT (handles slug race)
+            const inserted = await insertPostWithUniqueSlug({
+              title: article.title,
+              description: article.summary,
+              url: article.url,
+              imageUrl: article.imageUrl,
+              sourceId: source.id,
+              categoryId,
+              score,
+              createdAt: article.createdAt
+                ? new Date(article.createdAt)
+                : new Date(),
+            }).catch(() => null);
+
+            if (!inserted) return null;
+
+            // ✅ ONLY NOW mark dedupe key
+            await redis.set(getDedupeKey(article.url), "1", {
+              EX: DEDUPE_TTL_SECONDS,
+            });
 
             return article.url;
           }),
         ),
       );
 
-      const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.filter((r) => r.status === "rejected");
+      const succeeded = results.filter(
+        (r) => r.status === "fulfilled" && r.value !== null,
+      ).length;
+
+      const failed = results.filter(
+        (r) => r.status === "rejected" || r.value === null,
+      );
 
       failed.forEach((f) => logger.error("Insert failed:", (f as any).reason));
 

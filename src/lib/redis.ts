@@ -72,23 +72,19 @@ export async function getRedis(): Promise<RedisClientType> {
     connectPromise = (async () => {
       try {
         await redis!.connect();
-
         // Health check
         await redis!.ping();
         console.log("[redis] Ping successful");
-
         return redis!;
       } catch (err) {
         console.error("[redis] Failed to connect:", err);
-
-        // Reset so future retries can happen
-        connectPromise = null;
-
         throw err;
+      } finally {
+        // Always clear so future reconnect attempts are possible
+        connectPromise = null;
       }
     })();
   }
-
   return connectPromise;
 }
 
@@ -109,7 +105,9 @@ async function shutdown() {
 }
 
 // Avoid duplicate listeners (important in dev/serverless)
-if (!process.listenerCount("SIGINT")) {
+if (!process.listeners("SIGINT").includes(shutdown)) {
   process.on("SIGINT", shutdown);
+}
+if (!process.listeners("SIGTERM").includes(shutdown)) {
   process.on("SIGTERM", shutdown);
 }

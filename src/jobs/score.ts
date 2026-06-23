@@ -21,8 +21,10 @@ const WEIGHTS = {
 function freshnessScore(createdAt: Date | null): number {
   if (!createdAt) return 0;
 
-  const hoursOld = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60);
-
+  const hoursOld = Math.max(
+    0,
+    (Date.now() - createdAt.getTime()) / (1000 * 60 * 60),
+  );
   // Exponential decay: full score when fresh, approaches 0 after ~36 hours
   return WEIGHTS.freshness * Math.pow(0.5, hoursOld / 12);
 }

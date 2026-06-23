@@ -7,9 +7,14 @@ import { getRedis } from "../lib/redis";
 // ===============================
 
 async function getVersion(key: string): Promise<string> {
-  const redis = await getRedis();
-  const v = await redis.get(key);
-  return v ?? "1";
+  try {
+    const redis = await getRedis();
+    const v = await redis.get(key);
+    return v ?? "1";
+  } catch (err) {
+    console.warn(`[cache] getVersion fallback for "${key}"`, err);
+    return "1";
+  }
 }
 
 /**
@@ -23,17 +28,24 @@ async function getVersionWithFallback(
   primaryKey: string,
   fallbackKey?: string,
 ): Promise<string> {
-  const redis = await getRedis();
+  try {
+    const redis = await getRedis();
+    const primary = await redis.get(primaryKey);
+    if (primary) return primary;
 
-  const primary = await redis.get(primaryKey);
-  if (primary) return primary;
+    if (fallbackKey) {
+      const fallback = await redis.get(fallbackKey);
+      if (fallback) return fallback;
+    }
 
-  if (fallbackKey) {
-    const fallback = await redis.get(fallbackKey);
-    if (fallback) return fallback;
+    return "1";
+  } catch (err) {
+    console.warn(
+      `[cache] getVersionWithFallback defaulted for "${primaryKey}"`,
+      err,
+    );
+    return "1";
   }
-
-  return "1";
 }
 
 // ===============================
