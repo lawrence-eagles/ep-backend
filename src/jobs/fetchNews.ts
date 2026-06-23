@@ -41,8 +41,7 @@ function isSafeUrl(raw: string): boolean {
     const ipv4 = hostname.match(/^(?:\d{1,3}\.){3}\d{1,3}$/);
 
     if (ipv4) {
-      const parts = hostname.split(".").map(Number);
-      const [a, b] = parts;
+      const [a, b] = hostname.split(".").map(Number);
 
       if (a === 127) return false;
       if (a === 10) return false;
@@ -89,9 +88,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 const RssItemSchema = z.object({
   title: z.string().min(1),
-  link: z.string().refine(isSafeUrl, {
-    message: "Unsafe URL",
-  }),
+  link: z.string().refine(isSafeUrl, { message: "Unsafe URL" }),
   contentSnippet: z.string().optional(),
   enclosure: z
     .object({
@@ -126,7 +123,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
     id: "fetch-news-production",
     name: "Fetch News from RSS Feeds",
     concurrency: { limit: 1 },
-    triggers: { cron: "0 */12 * * *" },
+    triggers: { cron: "0 */6 * * *" },
     retries: 2,
   },
 
@@ -168,17 +165,29 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       return { processed: 0 };
     }
 
-    // ── STEP 2: Deduplication (READ ONLY) ───────────────────────────────
+    // ── STEP 2: Deduplication (Redis + DB) ───────────────────────────────
 
     const uniqueArticles: RawArticle[] = await step.run(
       "deduplicate",
       async () => {
         const urls = rawArticles.map((a) => a.url);
+        const redisKeys = urls.map(getDedupeKey);
+
+        const redisResults = await redis.mGet(redisKeys);
+
+        const seenSet = new Set<string>();
+        redisResults.forEach((val, i) => {
+          if (val !== null) seenSet.add(urls[i]);
+        });
+
+        const notSeen = rawArticles.filter((a) => !seenSet.has(a.url));
+
         const existingSet = new Set<string>();
 
         const chunkSize = 100;
-        for (let i = 0; i < urls.length; i += chunkSize) {
-          const chunk = urls.slice(i, i + chunkSize);
+        for (let i = 0; i < notSeen.length; i += chunkSize) {
+          const chunk = notSeen.slice(i, i + chunkSize).map((a) => a.url);
+
           const rows = await db
             .select({ url: posts.url })
             .from(posts)
@@ -187,9 +196,12 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           rows.forEach((r) => existingSet.add(r.url));
         }
 
-        const fresh = rawArticles.filter((a) => !existingSet.has(a.url));
+        const fresh = notSeen.filter((a) => !existingSet.has(a.url));
 
-        logger.info(`Dedupe: ${rawArticles.length} → ${fresh.length}`);
+        logger.info(
+          `Dedupe: ${rawArticles.length} → ${fresh.length} (redis + db)`,
+        );
+
         return fresh;
       },
     );
@@ -231,14 +243,21 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           )
           .map((r) => r.value);
 
-        const failed = results.filter((r) => r.status === "rejected");
-
-        failed.forEach((f) => logger.warn("Scrape failed:", (f as any).reason));
+        results.forEach((r) => {
+          if (r.status === "rejected") {
+            logger.warn("Scrape failed:", r.reason);
+          }
+        });
 
         logger.info(`Scraped ${success.length} articles`);
         return success;
       },
     );
+
+    if (!scrapedArticles.length) {
+      logger.info("No articles scraped");
+      return { processed: 0 };
+    }
 
     // ── STEP 4: AI Summarization ────────────────────────────────────────
 
@@ -270,7 +289,9 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
         results.forEach((r) => {
           if (r.status !== "fulfilled") return;
+
           const start = r.value.batchIndex * AI_BATCH_SIZE;
+
           r.value.summaries.forEach((s, i) => {
             summaries[start + i] = s;
           });
@@ -310,7 +331,6 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               createdAt: article.createdAt ? new Date(article.createdAt) : null,
             });
 
-            // ✅ SAFE INSERT (handles slug race)
             const inserted = await insertPostWithUniqueSlug({
               title: article.title,
               description: article.summary,
@@ -326,7 +346,6 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
             if (!inserted) return null;
 
-            // ✅ ONLY NOW mark dedupe key
             await redis.set(getDedupeKey(article.url), "1", {
               EX: DEDUPE_TTL_SECONDS,
             });
@@ -340,13 +359,16 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
         (r) => r.status === "fulfilled" && r.value !== null,
       ).length;
 
-      const failed = results.filter(
-        (r) => r.status === "rejected" || r.value === null,
-      );
+      results.forEach((r) => {
+        if (r.status === "rejected") {
+          logger.error("Insert failed:", r.reason);
+        }
+      });
 
-      failed.forEach((f) => logger.error("Insert failed:", (f as any).reason));
-
-      return { succeeded, failed: failed.length };
+      return {
+        succeeded,
+        failed: results.length - succeeded,
+      };
     });
 
     // ── STEP 6: Cache Invalidation ──────────────────────────────────────
