@@ -101,11 +101,11 @@ function isValidContent(content: string | null): boolean {
 
   const junkPatterns = [
     /enable javascript/i,
-    /subscribe/i,
-    /sign up/i,
-    /cookie/i,
-    /accept cookies/i,
-    /advertisement/i,
+    // /subscribe/i,
+    // /sign up/i,
+    // /cookie/i,
+    // /accept cookies/i,
+    // /advertisement/i,
   ];
 
   if (junkPatterns.some((r) => r.test(cleaned))) return false;
@@ -323,25 +323,44 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           ),
         );
 
-        const summaries: string[] = [];
+        // const summaries: string[] = [];
 
-        results.forEach((r) => {
-          if (r.status === "fulfilled") {
-            r.value.summaries.forEach((s) => {
-              if (s?.summary) summaries.push(s.summary);
-            });
-          }
+        // results.forEach((r) => {
+        //   if (r.status === "fulfilled") {
+        //     r.value.summaries.forEach((s) => {
+        //       if (s?.summary) summaries.push(s.summary);
+        //     });
+        //   }
+        // });
+
+        // let summaryIndex = 0;
+
+        // return validArticles.map((article): EnrichedArticle => {
+        //   const summary = summaries[summaryIndex++] ?? null;
+
+        //   return summary
+        //     ? { ...article, summary }
+        //     : { ...article, summary: null };
+        // });
+
+        const enriched: EnrichedArticle[] = [];
+
+        results.forEach((r, batchIdx) => {
+          const batchArticles = validArticles.slice(
+            batchIdx * AI_BATCH_SIZE,
+            batchIdx * AI_BATCH_SIZE + AI_BATCH_SIZE,
+          );
+
+          batchArticles.forEach((article, j) => {
+            const summary =
+              r.status === "fulfilled"
+                ? (r.value.summaries[j]?.summary ?? null)
+                : null;
+            enriched.push({ ...article, summary });
+          });
         });
 
-        let summaryIndex = 0;
-
-        return validArticles.map((article): EnrichedArticle => {
-          const summary = summaries[summaryIndex++] ?? null;
-
-          return summary
-            ? { ...article, summary }
-            : { ...article, summary: null };
-        });
+        return enriched;
       },
     );
 
