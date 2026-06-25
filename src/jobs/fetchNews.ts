@@ -100,12 +100,9 @@ function isValidContent(content: string | null): boolean {
   if (cleaned.length < MIN_CONTENT_LENGTH) return false;
 
   const junkPatterns = [
-    /enable javascript/i,
-    // /subscribe/i,
-    // /sign up/i,
-    // /cookie/i,
-    // /accept cookies/i,
-    // /advertisement/i,
+    /please enable javascript to view this page/i,
+    /you need to enable javascript to view this page/i,
+    /enable javascript to view this page/i,
   ];
 
   if (junkPatterns.some((r) => r.test(cleaned))) return false;
