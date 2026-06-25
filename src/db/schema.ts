@@ -231,6 +231,38 @@ export const likes = pgTable(
 );
 
 // =========================
+// ❤️ SHARES TABLE
+// =========================
+export const shares = pgTable(
+  "shares",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+
+    // 🔥 IMPORTANT
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.postId] }),
+
+    index("idx_shares_post_id").on(t.postId),
+    index("idx_shares_user_id").on(t.userId),
+
+    // 🔥 future-proof (optional)
+    // index("idx_shares_post_created").on(t.postId, t.createdAt),
+  ],
+);
+// IMPORTANT NOTE
+// My current indexes on the shares table optimises for: SELECT user_id FROM shares WHERE post_id = ?
+// but if later I add: ORDER BY created_at DESC
+// I will then need to comment and use this index: index("idx_shares_post_created").on(t.postId, t.createdAt)
+
+// =========================
 // 🔖 BOOKMARKS TABLE
 // =========================
 
@@ -398,6 +430,7 @@ export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
   likes: many(likes),
+  shares: many(shares),
   bookmarks: many(bookmarks),
   comments: many(comments),
   follows: many(follows),
@@ -442,6 +475,19 @@ export const likesRelations = relations(likes, ({ one }) => ({
 
   post: one(posts, {
     fields: [likes.postId],
+    references: [posts.id],
+  }),
+}));
+
+// Shares Relations
+export const sharesRelations = relations(shares, ({ one }) => ({
+  user: one(user, {
+    fields: [shares.userId],
+    references: [user.id],
+  }),
+
+  post: one(posts, {
+    fields: [shares.postId],
     references: [posts.id],
   }),
 }));
