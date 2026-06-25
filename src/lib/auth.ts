@@ -9,6 +9,7 @@ const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
 
 export const auth = betterAuth({
+  baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [frontendOrigin],
   socialProviders: {
     facebook: {
