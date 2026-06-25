@@ -13,14 +13,14 @@ export interface RawArticle {
 // ── After scraping ─────────────────────────────────────────────────────────────
 
 export interface ScrapedArticle extends RawArticle {
-  content: string;
+  content: string | null;
   imageUrl: string | null; // overwritten after OG scrape
 }
 
 // ── After AI enrichment ────────────────────────────────────────────────────────
 
 export interface EnrichedArticle extends ScrapedArticle {
-  summary: string;
+  summary: string | null;
 }
 
 // ── AI summary response shape ──────────────────────────────────────────────────
