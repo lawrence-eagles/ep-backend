@@ -12,11 +12,12 @@ import likesRoutes from "./routes/likesRoutes";
 import sharesRoutes from "./routes/sharesRoutes";
 
 const env = getEnv();
+const frontendOrigin = new URL(env.FRONTEND_URL).origin;
 const app = express();
 
 app.use(
   cors({
-    origin: env.FRONTEND_URL, // Replace with your frontend's origin
+    origin: frontendOrigin, // Replace with your frontend's origin
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Specify allowed HTTP methods
     credentials: true, // Allow credentials (cookies, authorization headers, etc.)
   }),

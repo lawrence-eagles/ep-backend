@@ -3,9 +3,25 @@ import type { Request, Response } from "express";
 import { db } from "../db";
 import { getRedis } from "../lib/redis";
 
-export const bookmarkVersionOne = async (req: Request, res: Response) => {
-  const redis = await getRedis();
+// =========================
+// 🔥 SAFE REDIS HELPER
+// =========================
+async function safeCacheInvalidate(
+  fn: (redis: Awaited<ReturnType<typeof getRedis>>) => Promise<void>,
+) {
+  try {
+    const redis = await getRedis();
+    await fn(redis);
+  } catch (err) {
+    // 🔥 NEVER crash request because of cache
+    console.error("REDIS ERROR (non-blocking):", err);
+  }
+}
 
+// =========================
+// 🔥 BOOKMARK
+// =========================
+export const bookmarkVersionOne = async (req: Request, res: Response) => {
   // =========================
   // 1. AUTH VALIDATION
   // =========================
@@ -27,10 +43,9 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
 
   try {
     // =========================
-    // 2. TRANSACTION
+    // 2. TRANSACTION (SOURCE OF TRUTH)
     // =========================
     await db.transaction(async (tx) => {
-      // ✅ 1. Validate post exists + get slug + category in ONE query
       const postResult = await tx.execute<{
         id: string;
         slug: string;
@@ -50,7 +65,6 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
       slug = post.slug;
       const categoryId = post.category_id;
 
-      // ✅ 2. Insert bookmark (idempotent)
       const insertResult = await tx.execute(sql`
         INSERT INTO bookmarks (user_id, post_id)
         VALUES (${userId}, ${postId})
@@ -62,14 +76,12 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
 
       if (!isNewBookmark) return;
 
-      // ✅ 3. Update post score
       await tx.execute(sql`
         UPDATE posts
         SET score = score + 8
         WHERE id = ${postId}
       `);
 
-      // ✅ 4. Update user behavior (only if category exists)
       if (categoryId) {
         await tx.execute(sql`
           INSERT INTO user_behavior (user_id, category_id, score)
@@ -82,26 +94,27 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 3. REDIS INVALIDATION
+    // 3. RESPONSE FIRST (🔥 IMPORTANT)
     // =========================
-    if (isNewBookmark && slug) {
-      const pipeline = redis.multi();
-
-      // 🔥 Version-based cache invalidation (O(1))
-      pipeline.incr(`bookmarks:${userId}:version`);
-      pipeline.incr(`post:${slug}:version`);
-      pipeline.incr(`feed:${userId}:version`);
-
-      await pipeline.exec();
-    }
-
-    // =========================
-    // 4. RESPONSE
-    // =========================
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       isNewBookmark,
     });
+
+    // =========================
+    // 4. CACHE INVALIDATION (NON-BLOCKING)
+    // =========================
+    if (isNewBookmark && slug) {
+      void safeCacheInvalidate(async (redis) => {
+        const pipeline = redis.multi();
+
+        pipeline.incr(`bookmarks:${userId}:version`);
+        pipeline.incr(`post:${slug}:version`);
+        pipeline.incr(`feed:${userId}:version`);
+
+        await pipeline.exec();
+      });
+    }
   } catch (err) {
     console.error("BOOKMARK ERROR:", err);
 
@@ -115,9 +128,10 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
   }
 };
 
+// =========================
+// 🔥 UNBOOKMARK
+// =========================
 export const unbookmarkVersionOne = async (req: Request, res: Response) => {
-  const redis = await getRedis();
-
   const { postId } = req.params;
 
   // =========================
@@ -143,7 +157,6 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
     // 2. TRANSACTION
     // =========================
     await db.transaction(async (tx) => {
-      // ✅ 1. Get post info (slug + category)
       const postResult = await tx.execute<{
         id: string;
         slug: string;
@@ -163,7 +176,6 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
       slug = post.slug;
       const categoryId = post.category_id;
 
-      // ✅ 2. Delete bookmark (idempotent)
       const deleteResult = await tx.execute(sql`
         DELETE FROM bookmarks
         WHERE user_id = ${userId}
@@ -175,14 +187,12 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
 
       if (!wasDeleted) return;
 
-      // ✅ 3. Decrease post score (clamped)
       await tx.execute(sql`
         UPDATE posts
         SET score = GREATEST(score - 8, 0)
         WHERE id = ${postId}
       `);
 
-      // ✅ 4. Decrease user behavior (only if category exists)
       if (categoryId) {
         await tx.execute(sql`
           UPDATE user_behavior
@@ -194,25 +204,27 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 3. REDIS INVALIDATION
+    // 3. RESPONSE FIRST
     // =========================
-    if (wasDeleted && slug) {
-      const pipeline = redis.multi();
-
-      pipeline.incr(`bookmarks:${userId}:version`);
-      pipeline.incr(`post:${slug}:version`);
-      pipeline.incr(`feed:${userId}:version`);
-
-      await pipeline.exec();
-    }
-
-    // =========================
-    // 4. RESPONSE
-    // =========================
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       wasDeleted,
     });
+
+    // =========================
+    // 4. CACHE INVALIDATION (NON-BLOCKING)
+    // =========================
+    if (wasDeleted && slug) {
+      void safeCacheInvalidate(async (redis) => {
+        const pipeline = redis.multi();
+
+        pipeline.incr(`bookmarks:${userId}:version`);
+        pipeline.incr(`post:${slug}:version`);
+        pipeline.incr(`feed:${userId}:version`);
+
+        await pipeline.exec();
+      });
+    }
   } catch (err) {
     console.error("UNBOOKMARK ERROR:", err);
 

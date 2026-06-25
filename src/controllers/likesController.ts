@@ -3,9 +3,22 @@ import type { Request, Response } from "express";
 import { db } from "../db";
 import { getRedis } from "../lib/redis";
 
-export const likeVersionOne = async (req: Request, res: Response) => {
-  const redis = await getRedis();
+// =========================
+// 🔥 SAFE REDIS HELPER
+// =========================
+async function getRedisSafe() {
+  try {
+    return await getRedis();
+  } catch (err) {
+    console.error("REDIS INIT ERROR:", err);
+    return null;
+  }
+}
 
+// =========================
+// 👍 LIKE
+// =========================
+export const likeVersionOne = async (req: Request, res: Response) => {
   const { postId } = req.body;
 
   // =========================
@@ -31,7 +44,6 @@ export const likeVersionOne = async (req: Request, res: Response) => {
     // 2. TRANSACTION
     // =========================
     await db.transaction(async (tx) => {
-      // ✅ 1. Get post (slug + category in ONE query)
       const postResult = await tx.execute<{
         id: string;
         slug: string;
@@ -51,7 +63,6 @@ export const likeVersionOne = async (req: Request, res: Response) => {
       slug = post.slug;
       const categoryId = post.category_id;
 
-      // ✅ 2. Insert like (idempotent)
       const likeResult = await tx.execute(sql`
         INSERT INTO likes (user_id, post_id)
         VALUES (${userId}, ${postId})
@@ -63,7 +74,6 @@ export const likeVersionOne = async (req: Request, res: Response) => {
 
       if (!isNewLike) return;
 
-      // ✅ 3. Update post counters (single query)
       await tx.execute(sql`
         UPDATE posts
         SET 
@@ -72,7 +82,6 @@ export const likeVersionOne = async (req: Request, res: Response) => {
         WHERE id = ${postId}
       `);
 
-      // ✅ 4. Update user behavior (only if category exists)
       if (categoryId) {
         await tx.execute(sql`
           INSERT INTO user_behavior (user_id, category_id, score)
@@ -85,20 +94,25 @@ export const likeVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 3. REDIS INVALIDATION
+    // 3. CACHE (BEST EFFORT)
     // =========================
     if (isNewLike && slug) {
-      const pipeline = redis.multi();
+      const redis = await getRedisSafe();
 
-      // 🔥 Version invalidation (O(1))
-      pipeline.incr(`post:${slug}:version`);
-      pipeline.incr(`feed:${userId}:version`);
-      pipeline.incr(`feed:trending:version`);
+      if (redis) {
+        try {
+          const pipeline = redis.multi();
 
-      // 🔥 Real-time counter
-      pipeline.incr(`post:${postId}:likes`);
+          pipeline.incr(`post:${slug}:version`);
+          pipeline.incr(`feed:${userId}:version`);
+          pipeline.incr(`feed:trending:version`);
+          pipeline.incr(`post:${postId}:likes`);
 
-      await pipeline.exec();
+          await pipeline.exec();
+        } catch (err) {
+          console.error("REDIS LIKE ERROR:", err);
+        }
+      }
     }
 
     // =========================
@@ -121,9 +135,10 @@ export const likeVersionOne = async (req: Request, res: Response) => {
   }
 };
 
+// =========================
+// 👎 UNLIKE
+// =========================
 export const unlikeVersionOne = async (req: Request, res: Response) => {
-  const redis = await getRedis();
-
   const { postId } = req.params;
 
   // =========================
@@ -149,7 +164,6 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
     // 2. TRANSACTION
     // =========================
     await db.transaction(async (tx) => {
-      // ✅ 1. Fetch post (slug + category in ONE query)
       const postResult = await tx.execute<{
         id: string;
         slug: string;
@@ -169,7 +183,6 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
       slug = post.slug;
       const categoryId = post.category_id;
 
-      // ✅ 2. Delete like (idempotent)
       const deleteResult = await tx.execute(sql`
         DELETE FROM likes
         WHERE user_id = ${userId}
@@ -181,7 +194,6 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
 
       if (!isRemoved) return;
 
-      // ✅ 3. Update post counters (clamped)
       await tx.execute(sql`
         UPDATE posts
         SET 
@@ -190,7 +202,6 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
         WHERE id = ${postId}
       `);
 
-      // ✅ 4. Update user behavior (only if category exists)
       if (categoryId) {
         await tx.execute(sql`
           UPDATE user_behavior
@@ -202,25 +213,30 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 3. REDIS INVALIDATION
+    // 3. CACHE (BEST EFFORT)
     // =========================
     if (isRemoved && slug) {
-      const pipeline = redis.multi();
+      const redis = await getRedisSafe();
 
-      // 🔥 Version invalidation (O(1))
-      pipeline.incr(`post:${slug}:version`);
-      pipeline.incr(`feed:${userId}:version`);
-      pipeline.incr(`feed:trending:version`);
+      if (redis) {
+        try {
+          const pipeline = redis.multi();
 
-      // 🔥 Real-time counter decrement
-      pipeline.decr(`post:${postId}:likes`);
+          pipeline.incr(`post:${slug}:version`);
+          pipeline.incr(`feed:${userId}:version`);
+          pipeline.incr(`feed:trending:version`);
+          pipeline.decr(`post:${postId}:likes`);
 
-      await pipeline.exec();
+          await pipeline.exec();
 
-      // 🔥 Safety guard (rare but correct)
-      const likes = await redis.get(`post:${postId}:likes`);
-      if (likes && parseInt(likes, 10) < 0) {
-        await redis.set(`post:${postId}:likes`, 0);
+          // 🔥 Safety clamp (non-critical)
+          const likes = await redis.get(`post:${postId}:likes`);
+          if (likes && parseInt(likes, 10) < 0) {
+            await redis.set(`post:${postId}:likes`, 0);
+          }
+        } catch (err) {
+          console.error("REDIS UNLIKE ERROR:", err);
+        }
       }
     }
 
