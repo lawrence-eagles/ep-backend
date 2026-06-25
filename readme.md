@@ -6,3 +6,4 @@
 4. Verify the isValidContent function learn what it does it seems too strong. ✅
 5. Research how to implement protected route in better auth both for frontend and backend.
 6. Implement protected routes where needed. ✅
+7. Implement the next 5 routes
