@@ -4,11 +4,13 @@ import {
   bookmarkVersionOne,
   unbookmarkVersionOne,
 } from "../controllers/bookmarksController";
+import { bookmarksFeedVersionOne } from "../controllers/bookmarksFeedController";
 
 const router = Router();
 
 router.use(authUser);
 
+router.get("/", bookmarksFeedVersionOne);
 router.post("/", bookmarkVersionOne);
 router.delete("/:postId", unbookmarkVersionOne);
 

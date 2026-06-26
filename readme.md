@@ -9,3 +9,11 @@
 7. Implement the next 5 routes
 8. Update category keywords
 9. Update RSS feeds
+
+redis initialization at line 69 check if this is too early and if this needs to use safe redis helper as seen below:
+
+Fix this error and return a complete production ready code without missing anything.
+note return a complete bookmarksFeedController.ts code that is production grade without missing anything.
+Note I use node-redis.
+
+Note fetchNews line is line 323

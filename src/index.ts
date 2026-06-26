@@ -10,6 +10,7 @@ import categoriesRoutes from "./routes/categoriesRoutes";
 import followsRoutes from "./routes/followsRoutes";
 import likesRoutes from "./routes/likesRoutes";
 import sharesRoutes from "./routes/sharesRoutes";
+import feedsRoutes from "./routes/feedsRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -35,6 +36,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.use("/api/v1/posts", feedsRoutes);
 app.use("/api/v1/bookmarks", bookmarksRoutes);
 app.use("/api/v1/categories", categoriesRoutes);
 app.use("/api/v1/follows", followsRoutes);
