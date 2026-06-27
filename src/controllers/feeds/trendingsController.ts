@@ -7,6 +7,8 @@ import { buildTrendingKey } from "../../utils/cache";
 const PAGE_SIZE = 20;
 const CACHE_TTL = 30;
 const TRENDING_WINDOW_DAYS = 7;
+const MAX_CURSOR_AGE_MS = 15 * 60 * 1000;
+const MAX_CURSOR_FUTURE_SKEW_MS = 30 * 1000;
 
 // =========================
 // 🔥 SAFE REDIS HELPER
@@ -116,6 +118,15 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     if (cursorParam) {
       try {
         cursor = decodeCursor(cursorParam);
+        const snapshotMs = Date.parse(cursor.snapshotTime);
+        const nowMs = Date.now();
+
+        if (
+          snapshotMs < nowMs - MAX_CURSOR_AGE_MS ||
+          snapshotMs > nowMs + MAX_CURSOR_FUTURE_SKEW_MS
+        ) {
+          return res.status(400).json({ error: "Invalid cursor" });
+        }
       } catch {
         return res.status(400).json({ error: "Invalid cursor" });
       }
