@@ -96,7 +96,7 @@ interface TrendingRow {
 }
 
 // =========================
-// 🚀 TRENDINGS CONTROLLER
+// 🚀 CONTROLLER
 // =========================
 export const trendingFeedVersionOne = async (req: Request, res: Response) => {
   try {
