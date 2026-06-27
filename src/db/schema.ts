@@ -144,27 +144,41 @@ export const posts = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
-    // 🔥 FEED / TRENDING (correct sort order)
+    // =========================
+    // 🔥 TRENDING / FEED
+    // =========================
+
+    // Primary feed sorting (pre-ranking)
     index("idx_posts_trending").on(
       t.score.desc(),
       t.createdAt.desc(),
       t.id.desc(),
     ),
 
-    // 🔥 PAGINATION (cursor-based)
+    // 🔥 NEW (missing, important)
+    index("idx_posts_score_created").on(t.score.desc(), t.createdAt.desc()),
+
+    // =========================
+    // 🔥 PAGINATION
+    // =========================
+
     index("idx_posts_created_at_id").on(t.createdAt.desc(), t.id.desc()),
 
+    // =========================
     // 🔥 FILTERING
+    // =========================
+
     index("idx_posts_category_id").on(t.categoryId),
     index("idx_posts_source_id").on(t.sourceId),
 
-    // 🔥 FILTER + SORT (VERY IMPORTANT)
+    // Filter + sort
     index("idx_posts_category_created").on(t.categoryId, t.createdAt.desc()),
 
-    // 🔥 SORTING
-    index("idx_posts_score").on(t.score.desc()),
+    // =========================
+    // 🔥 SORTING / ANALYTICS
+    // =========================
 
-    // 🔥 ANALYTICS
+    index("idx_posts_score").on(t.score.desc()),
     index("idx_posts_clicks").on(t.clicks),
   ],
 );
@@ -335,27 +349,23 @@ export const follows = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, {
-        onDelete: "cascade", // ✅ prevent orphan follows
+        onDelete: "cascade",
       }),
 
     categoryId: uuid("category_id")
       .notNull()
       .references(() => categories.id, {
-        onDelete: "cascade", // ✅ prevent orphan follows
+        onDelete: "cascade",
       }),
 
-    // ✅ Useful for sorting, analytics, debugging
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
-    // ✅ Composite PK (also unique + indexed)
+    // ✅ PRIMARY KEY (already indexed)
     primaryKey({ columns: [t.userId, t.categoryId] }),
 
-    // ✅ Query: "followers of category"
+    // ✅ Reverse lookup (VERY IMPORTANT)
     index("idx_follows_category_user").on(t.categoryId, t.userId),
-
-    // ✅ Query: "categories followed by user"
-    index("idx_follows_user_category").on(t.userId, t.categoryId),
   ],
 );
 

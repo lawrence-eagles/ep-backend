@@ -4,7 +4,7 @@ import {
   bookmarkVersionOne,
   unbookmarkVersionOne,
 } from "../controllers/bookmarksController";
-import { bookmarksFeedVersionOne } from "../controllers/bookmarksFeedController";
+import { bookmarksFeedVersionOne } from "../controllers/feeds/bookmarksFeedController";
 
 const router = Router();
 

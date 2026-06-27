@@ -1,10 +1,14 @@
 import type { Request, Response } from "express";
 import { sql } from "drizzle-orm";
-import { getRedis } from "../lib/redis";
-import { db } from "../db";
-import { buildFeedKey } from "../utils/cache";
+import { getRedis } from "../../lib/redis";
+import { db } from "../../db";
+import { buildTrendingKey } from "../../utils/cache";
 
 const PAGE_SIZE = 20;
+const CACHE_TTL = 30;
+const TRENDING_WINDOW_DAYS = 7;
+const MAX_CURSOR_AGE_MS = 15 * 60 * 1000;
+const MAX_CURSOR_FUTURE_SKEW_MS = 30 * 1000;
 
 // =========================
 // 🔥 SAFE REDIS HELPER
@@ -18,32 +22,37 @@ async function getRedisSafe() {
   }
 }
 
-// ── Cursor ─────────────────────────────────────────────────────────────
-
+// =========================
+// 🔐 CURSOR
+// =========================
 type Cursor = {
-  score: string;
+  score: string; // keep as string for precision
   createdAt: string;
   id: string;
-  snapshotTime: string; // ✅ FIX: ensures stable ranking across pages
+  snapshotTime: string;
 };
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 function decodeCursor(raw: string): Cursor {
-  const decoded = JSON.parse(
-    Buffer.from(raw, "base64url").toString("utf-8"),
-  ) as unknown;
+  let parsed: unknown;
 
-  if (!decoded || typeof decoded !== "object") {
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
+  } catch {
     throw new Error("Invalid cursor");
   }
 
-  const c = decoded as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const c = parsed as Record<string, unknown>;
 
   if (
     typeof c.score !== "string" ||
@@ -61,9 +70,10 @@ function decodeCursor(raw: string): Cursor {
   return c as Cursor;
 }
 
-// ── Row type ───────────────────────────────────────────────────────────
-
-interface FeedRow {
+// =========================
+// 🧾 ROW TYPE
+// =========================
+interface TrendingRow {
   [key: string]: unknown;
 
   id: string;
@@ -75,22 +85,23 @@ interface FeedRow {
   created_at: Date;
   category_id: string | null;
   source_id: string | null;
+  category_name: string | null;
+  source_name: string | null;
+  source_website: string | null;
   likes_count: number | string;
   comments_count: number | string;
-  category: string | null;
-  source_name: string | null;
-  source_url: string | null;
-  rank_score: number | string;
+  trend_score: number | string;
   user_liked: boolean | string;
   user_bookmarked: boolean | string;
 }
 
-// ── Controller ─────────────────────────────────────────────────────────
-
-export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
+// =========================
+// 🚀 CONTROLLER
+// =========================
+export const trendingFeedVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
-    // 1. VALIDATION
+    // 1. AUTH
     // =========================
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized user" });
@@ -107,62 +118,56 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
     if (cursorParam) {
       try {
         cursor = decodeCursor(cursorParam);
+        const snapshotMs = Date.parse(cursor.snapshotTime);
+        const nowMs = Date.now();
+
+        if (
+          snapshotMs < nowMs - MAX_CURSOR_AGE_MS ||
+          snapshotMs > nowMs + MAX_CURSOR_FUTURE_SKEW_MS
+        ) {
+          return res.status(400).json({ error: "Invalid cursor" });
+        }
       } catch {
         return res.status(400).json({ error: "Invalid cursor" });
       }
     }
 
     // =========================
-    // 3. SNAPSHOT TIME (CRITICAL FIX)
+    // 3. SNAPSHOT TIME (FIXED)
     // =========================
     const snapshotTime = cursor
       ? cursor.snapshotTime
       : new Date().toISOString();
 
     // =========================
-    // 4. REDIS (SAFE)
+    // 4. REDIS
     // =========================
     const redis = await getRedisSafe();
     let cacheKey: string | null = null;
 
     if (redis) {
+      cacheKey = await buildTrendingKey(userId, cursorParam);
+    }
+
+    // =========================
+    // CACHE READ
+    // =========================
+    if (!cursorParam && redis && cacheKey) {
       try {
-        const [userVersion, globalVersion] = await Promise.all([
-          redis.get(`feed:${userId}:version`),
-          redis.get("feed:global:version"),
-        ]);
-
-        cacheKey = await buildFeedKey(userId, cursorParam, {
-          userVersion,
-          globalVersion,
-        });
-
         const cached = await redis.get(cacheKey);
         if (cached) {
           return res.json(JSON.parse(cached));
         }
       } catch (err) {
-        console.error("REDIS READ ERROR:", err);
+        console.error("REDIS GET ERROR:", err);
       }
     }
 
     // =========================
-    // 5. STABLE RANKING (FIXED)
-    // =========================
-    const rankingExpr = sql<number>`
-    (
-      COALESCE(ub.score, 0) * 5 +
-      COALESCE(p.score, 0) * 2 +
-      CASE WHEN f.user_id IS NOT NULL THEN 3 ELSE 0 END -
-      FLOOR(EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at)) * 0.0001
-    )
-    `;
-
-    // =========================
-    // 6. QUERY (LIMIT + 1 FIX)
+    // 5. QUERY (SNAPSHOT SAFE)
     // =========================
     const query = sql`
-      WITH ranked_posts AS (
+      WITH scored_posts AS (
         SELECT
           p.id,
           p.title,
@@ -173,55 +178,59 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
           p.created_at,
           p.category_id,
           p.source_id,
+
           p.likes_count,
           p.comments_count,
-          c.name  AS category,
-          s.name  AS source_name,
-          s.url   AS source_url,
-          ${rankingExpr} AS rank_score
+
+          c.name AS category_name,
+          s.name AS source_name,
+          s.url  AS source_website,
+
+          (
+            (COALESCE(p.score, 0) * 3)
+            - EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at) * 0.0001
+          ) AS trend_score
 
         FROM posts p
-
-        LEFT JOIN user_behavior ub
-          ON ub.category_id = p.category_id
-         AND ub.user_id = ${userId}
-
-        LEFT JOIN follows f
-          ON f.category_id = p.category_id
-         AND f.user_id = ${userId}
-
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN sources s ON s.id = p.source_id
+
+        -- 🔥 FIXED: snapshot-based window
+        WHERE p.created_at > ${snapshotTime}::timestamp - INTERVAL '${sql.raw(
+          String(TRENDING_WINDOW_DAYS),
+        )} days'
       )
 
       SELECT
-        rp.*,
+        sp.*,
 
         EXISTS (
           SELECT 1 FROM likes l
-          WHERE l.post_id = rp.id AND l.user_id = ${userId}
+          WHERE l.post_id = sp.id
+            AND l.user_id = ${userId}
         ) AS user_liked,
 
         EXISTS (
           SELECT 1 FROM bookmarks b
-          WHERE b.post_id = rp.id AND b.user_id = ${userId}
+          WHERE b.post_id = sp.id
+            AND b.user_id = ${userId}
         ) AS user_bookmarked
 
-      FROM ranked_posts rp
+      FROM scored_posts sp
 
       ${
         cursor
           ? sql`
         WHERE (
-          rp.rank_score < ${cursor.score}::float
+          sp.trend_score < ${cursor.score}::float
           OR (
-            rp.rank_score = ${cursor.score}::float
-            AND rp.created_at < ${cursor.createdAt}::timestamp
+            sp.trend_score = ${cursor.score}::float
+            AND sp.created_at < ${cursor.createdAt}::timestamp
           )
           OR (
-            rp.rank_score = ${cursor.score}::float
-            AND rp.created_at = ${cursor.createdAt}::timestamp
-            AND rp.id < ${cursor.id}::uuid
+            sp.trend_score = ${cursor.score}::float
+            AND sp.created_at = ${cursor.createdAt}::timestamp
+            AND sp.id < ${cursor.id}::uuid
           )
         )
       `
@@ -229,39 +238,41 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
       }
 
       ORDER BY
-        rp.rank_score DESC,
-        rp.created_at DESC,
-        rp.id DESC
+        sp.trend_score DESC,
+        sp.created_at  DESC,
+        sp.id          DESC
 
-      LIMIT ${PAGE_SIZE + 1} -- ✅ FIX
+      LIMIT ${PAGE_SIZE + 1}
     `;
 
     const result = await db.execute(query);
-    const rows = result.rows as unknown as FeedRow[];
+    const rows = result.rows as TrendingRow[];
 
     // =========================
-    // 7. PAGINATION FIX
+    // 6. PAGINATION
     // =========================
     const hasMore = rows.length > PAGE_SIZE;
     const sliced = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
 
     // =========================
-    // 8. MAP RESPONSE
+    // 7. RESPONSE
     // =========================
     const items = sliced.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
+
       imageUrl: p.image_url,
       summary: p.description,
       sourceUrl: p.url,
+
       createdAt: new Date(p.created_at).toISOString(),
 
-      category: p.category,
+      category: p.category_name,
       categoryId: p.category_id,
 
       sourceName: p.source_name,
-      sourceWebsite: p.source_url,
+      sourceWebsite: p.source_website,
 
       likesCount: Number(p.likes_count) || 0,
       commentsCount: Number(p.comments_count) || 0,
@@ -271,7 +282,7 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
     }));
 
     // =========================
-    // 9. NEXT CURSOR (FIXED)
+    // 8. NEXT CURSOR (PRECISION SAFE)
     // =========================
     let nextCursor: string | null = null;
 
@@ -279,29 +290,31 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
       const last = sliced[sliced.length - 1];
 
       nextCursor = encodeCursor({
-        score: String(last.rank_score),
+        score: String(last.trend_score), // 🔥 NO ROUNDING
         createdAt: new Date(last.created_at).toISOString(),
         id: last.id,
-        snapshotTime, // ✅ CRITICAL FIX
+        snapshotTime,
       });
     }
 
     const response = { items, nextCursor };
 
     // =========================
-    // 10. CACHE WRITE (SAFE)
+    // CACHE WRITE
     // =========================
-    if (redis && cacheKey) {
+    if (!cursorParam && redis && cacheKey) {
       try {
-        await redis.set(cacheKey, JSON.stringify(response), { EX: 30 });
+        await redis.set(cacheKey, JSON.stringify(response), {
+          EX: CACHE_TTL,
+        });
       } catch (err) {
-        console.error("REDIS WRITE ERROR:", err);
+        console.error("REDIS SET ERROR:", err);
       }
     }
 
     return res.json(response);
   } catch (err) {
-    console.error("FEED ERROR:", err);
-    return res.status(500).json({ error: "Feed failed" });
+    console.error("TRENDING FEED ERROR:", err);
+    return res.status(500).json({ error: "Trending feed failed" });
   }
 };
