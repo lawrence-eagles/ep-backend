@@ -1,5 +1,5 @@
 // /utils/cache.ts
-
+import { createHash } from "node:crypto";
 import { getRedis } from "../lib/redis";
 
 // ===============================
@@ -108,11 +108,17 @@ export async function buildTrendingKey(
   }
 
   // Fetch global version (safe even if Redis fails upstream)
-  let version = "0";
+  // let version = "0";
+  let globalVersion = "0";
+  let userVersion = "0";
 
   try {
-    const v = await getVersion("feed:trending:version");
-    if (v) version = v;
+    const [gv, uv] = await Promise.all([
+      getVersion("feed:trending:version"),
+      getVersion(`feed:${userId}:version`),
+    ]);
+    globalVersion = gv;
+    userVersion = uv;
   } catch (err) {
     // 🔥 Never break request due to cache version failure
     console.error("VERSION FETCH ERROR:", err);
@@ -120,13 +126,16 @@ export async function buildTrendingKey(
 
   // Optional: prevent extremely large keys (defensive)
   const safeCursor =
-    cursor && cursor.length < 200 ? cursor : cursor ? "truncated" : null;
+    cursor && cursor.length < 200
+      ? cursor
+      : cursor
+        ? `sha256:${createHash("sha256").update(cursor).digest("hex")}`
+        : null;
 
   // Final key structure:
-  // feed:trending:v{version}:user:{userId}:{start|cursor:<cursor>}
   return safeCursor
-    ? `feed:trending:v${version}:user:${userId}:cursor:${safeCursor}`
-    : `feed:trending:v${version}:user:${userId}:start`;
+    ? `feed:trending:v${globalVersion}:user:${userId}:uv${userVersion}:cursor:${safeCursor}`
+    : `feed:trending:v${globalVersion}:user:${userId}:uv${userVersion}:start`;
 }
 
 // ===============================

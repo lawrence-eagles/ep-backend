@@ -114,7 +114,7 @@ export const singlePostControllerVersionOne = async (
     // ── CACHE READ (non-blocking) ────────────────────────────────────────────
     if (redis) {
       try {
-        const cacheKey = await buildPostCacheKey(slug);
+        cacheKey = await buildPostCacheKey(slug);
         const cached = await redis.get(cacheKey);
         if (cached) {
           basePost = JSON.parse(cached);
