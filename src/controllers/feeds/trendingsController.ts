@@ -6,8 +6,6 @@ import { buildTrendingKey } from "../../utils/cache";
 
 const PAGE_SIZE = 20;
 const CACHE_TTL = 30;
-
-// 🔥 limit dataset for performance (VERY IMPORTANT)
 const TRENDING_WINDOW_DAYS = 7;
 
 // =========================
@@ -23,11 +21,10 @@ async function getRedisSafe() {
 }
 
 // =========================
-// 🔐 CURSOR (STRICT SAFE)
+// 🔐 CURSOR
 // =========================
-
 type Cursor = {
-  score: string;
+  score: string; // keep as string for precision
   createdAt: string;
   id: string;
   snapshotTime: string;
@@ -74,7 +71,6 @@ function decodeCursor(raw: string): Cursor {
 // =========================
 // 🧾 ROW TYPE
 // =========================
-
 interface TrendingRow {
   [key: string]: unknown;
 
@@ -100,11 +96,10 @@ interface TrendingRow {
 // =========================
 // 🚀 CONTROLLER
 // =========================
-
 export const trendingFeedVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
-    // 1. VALIDATION
+    // 1. AUTH
     // =========================
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized user" });
@@ -127,24 +122,25 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // 3. SNAPSHOT TIME
+    // 3. SNAPSHOT TIME (FIXED)
     // =========================
     const snapshotTime = cursor
       ? cursor.snapshotTime
       : new Date().toISOString();
 
     // =========================
-    // 4. REDIS (SAFE + FIXED)
+    // 4. REDIS
     // =========================
     const redis = await getRedisSafe();
-
     let cacheKey: string | null = null;
 
     if (redis) {
       cacheKey = await buildTrendingKey(userId, cursorParam);
     }
 
-    // ── CACHE READ (first page only)
+    // =========================
+    // CACHE READ
+    // =========================
     if (!cursorParam && redis && cacheKey) {
       try {
         const cached = await redis.get(cacheKey);
@@ -157,7 +153,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // 5. QUERY (PERF + STABLE)
+    // 5. QUERY (SNAPSHOT SAFE)
     // =========================
     const query = sql`
       WITH scored_posts AS (
@@ -188,8 +184,8 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN sources s ON s.id = p.source_id
 
-        -- 🔥 PERFORMANCE GUARD (CRITICAL)
-        WHERE p.created_at > NOW() - INTERVAL '${sql.raw(
+        -- 🔥 FIXED: snapshot-based window
+        WHERE p.created_at > ${snapshotTime}::timestamp - INTERVAL '${sql.raw(
           String(TRENDING_WINDOW_DAYS),
         )} days'
       )
@@ -248,7 +244,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     const sliced = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
 
     // =========================
-    // 7. MAP RESPONSE
+    // 7. RESPONSE
     // =========================
     const items = sliced.map((p) => ({
       id: p.id,
@@ -275,7 +271,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     }));
 
     // =========================
-    // 8. NEXT CURSOR (PRECISION FIX)
+    // 8. NEXT CURSOR (PRECISION SAFE)
     // =========================
     let nextCursor: string | null = null;
 
@@ -283,7 +279,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       const last = sliced[sliced.length - 1];
 
       nextCursor = encodeCursor({
-        score: Number(last.trend_score).toFixed(6), // 🔥 FIXED
+        score: String(last.trend_score), // 🔥 NO ROUNDING
         createdAt: new Date(last.created_at).toISOString(),
         id: last.id,
         snapshotTime,
@@ -293,7 +289,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     const response = { items, nextCursor };
 
     // =========================
-    // 9. CACHE WRITE (SAFE)
+    // CACHE WRITE
     // =========================
     if (!cursorParam && redis && cacheKey) {
       try {
