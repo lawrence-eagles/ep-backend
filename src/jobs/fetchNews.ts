@@ -382,7 +382,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
             if (!inserted) return null;
 
             // ✅ FIXED: return type now Promise<void> + non-blocking
-            safeCacheInvalidate(async (redis) => {
+            await safeCacheInvalidate(async (redis) => {
               await redis.set(getDedupeKey(article.url), "1", {
                 EX: DEDUPE_TTL_SECONDS,
               });

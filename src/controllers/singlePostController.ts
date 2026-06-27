@@ -53,8 +53,8 @@ async function trackClick(
       await tx.execute(sql`
         UPDATE posts
         SET
-          clicks = clicks + 1,
-          score  = score  + 2
+          clicks = COALESCE(clicks, 0) + 1,
+          score  = COALESCE(score, 0)  + 2
         WHERE id = ${postId}
       `);
 
@@ -63,7 +63,7 @@ async function trackClick(
           INSERT INTO user_behavior (user_id, category_id, score)
           VALUES (${userId}, ${categoryId}, 2)
           ON CONFLICT (user_id, category_id)
-          DO UPDATE SET score = user_behavior.score + 2
+          DO UPDATE SET score = COALESCE(user_behavior.score, 0) + 2
         `);
       }
     });
@@ -107,13 +107,14 @@ export const singlePostControllerVersionOne = async (
     // 2. REDIS (SAFE)
     // =========================
     const redis = await getRedisSafe();
-    const cacheKey = await buildPostCacheKey(slug);
+    let cacheKey: string | null = null;
 
     let basePost: ReturnType<typeof mapPost> | null = null;
 
     // ── CACHE READ (non-blocking) ────────────────────────────────────────────
     if (redis) {
       try {
+        const cacheKey = await buildPostCacheKey(slug);
         const cached = await redis.get(cacheKey);
         if (cached) {
           basePost = JSON.parse(cached);
@@ -156,7 +157,7 @@ export const singlePostControllerVersionOne = async (
       basePost = mapPost(p);
 
       // Cache only semi-hot posts
-      if (redis && (p.clicks ?? 0) > 10) {
+      if (redis && cacheKey && (p.clicks ?? 0) > 10) {
         try {
           await redis.set(cacheKey, JSON.stringify(basePost), { EX: 300 });
         } catch (err) {

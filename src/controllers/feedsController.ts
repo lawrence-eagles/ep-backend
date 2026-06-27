@@ -18,26 +18,53 @@ async function getRedisSafe() {
   }
 }
 
-// ── Cursor ───────────────────────────────────────────────────────────────────
+// ── Cursor ─────────────────────────────────────────────────────────────
 
 type Cursor = {
   score: string;
   createdAt: string;
   id: string;
+  snapshotTime: string; // ✅ FIX: ensures stable ranking across pages
 };
 
 function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function decodeCursor(raw: string): Cursor {
-  return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8")) as Cursor;
+  const decoded = JSON.parse(
+    Buffer.from(raw, "base64url").toString("utf-8"),
+  ) as unknown;
+
+  if (!decoded || typeof decoded !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const c = decoded as Record<string, unknown>;
+
+  if (
+    typeof c.score !== "string" ||
+    !Number.isFinite(Number(c.score)) ||
+    typeof c.createdAt !== "string" ||
+    Number.isNaN(Date.parse(c.createdAt)) ||
+    typeof c.id !== "string" ||
+    !UUID_RE.test(c.id) ||
+    typeof c.snapshotTime !== "string" ||
+    Number.isNaN(Date.parse(c.snapshotTime))
+  ) {
+    throw new Error("Invalid cursor");
+  }
+
+  return c as Cursor;
 }
 
-// ── Row type ─────────────────────────────────────────────────────────────────
+// ── Row type ───────────────────────────────────────────────────────────
 
 interface FeedRow {
-  [key: string]: unknown; // ✅ FIX (critical for TS compatibility)
+  [key: string]: unknown;
 
   id: string;
   title: string;
@@ -58,16 +85,7 @@ interface FeedRow {
   user_bookmarked: boolean | string;
 }
 
-// ── Ranking ──────────────────────────────────────────────────────────────────
-
-const rankingExpr = sql<number>`
-(
-  COALESCE(ub.score, 0) * 5 +
-  COALESCE(p.score, 0) * 2 +
-  CASE WHEN f.user_id IS NOT NULL THEN 3 ELSE 0 END -
-  FLOOR(EXTRACT(EPOCH FROM NOW() - p.created_at)) * 0.0001
-)
-`;
+// ── Controller ─────────────────────────────────────────────────────────
 
 export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
   try {
@@ -82,10 +100,29 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
     const cursorParam = (req.query.cursor as string) || null;
 
     // =========================
-    // 2. REDIS (SAFE)
+    // 2. CURSOR
+    // =========================
+    let cursor: Cursor | null = null;
+
+    if (cursorParam) {
+      try {
+        cursor = decodeCursor(cursorParam);
+      } catch {
+        return res.status(400).json({ error: "Invalid cursor" });
+      }
+    }
+
+    // =========================
+    // 3. SNAPSHOT TIME (CRITICAL FIX)
+    // =========================
+    const snapshotTime = cursor
+      ? cursor.snapshotTime
+      : new Date().toISOString();
+
+    // =========================
+    // 4. REDIS (SAFE)
     // =========================
     const redis = await getRedisSafe();
-
     let cacheKey: string | null = null;
 
     if (redis) {
@@ -110,20 +147,19 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // 3. CURSOR
+    // 5. STABLE RANKING (FIXED)
     // =========================
-    let cursor: Cursor | null = null;
-
-    if (cursorParam) {
-      try {
-        cursor = decodeCursor(cursorParam);
-      } catch {
-        return res.status(400).json({ error: "Invalid cursor" });
-      }
-    }
+    const rankingExpr = sql<number>`
+    (
+      COALESCE(ub.score, 0) * 5 +
+      COALESCE(p.score, 0) * 2 +
+      CASE WHEN f.user_id IS NOT NULL THEN 3 ELSE 0 END -
+      FLOOR(EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at)) * 0.0001
+    )
+    `;
 
     // =========================
-    // 4. QUERY
+    // 6. QUERY (LIMIT + 1 FIX)
     // =========================
     const query = sql`
       WITH ranked_posts AS (
@@ -197,18 +233,22 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
         rp.created_at DESC,
         rp.id DESC
 
-      LIMIT ${PAGE_SIZE}
+      LIMIT ${PAGE_SIZE + 1} -- ✅ FIX
     `;
 
     const result = await db.execute(query);
-
-    // ✅ FIX: safe cast
     const rows = result.rows as unknown as FeedRow[];
 
     // =========================
-    // 5. MAP RESPONSE
+    // 7. PAGINATION FIX
     // =========================
-    const items = rows.map((p) => ({
+    const hasMore = rows.length > PAGE_SIZE;
+    const sliced = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
+
+    // =========================
+    // 8. MAP RESPONSE
+    // =========================
+    const items = sliced.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
@@ -231,24 +271,25 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
     }));
 
     // =========================
-    // 6. NEXT CURSOR
+    // 9. NEXT CURSOR (FIXED)
     // =========================
     let nextCursor: string | null = null;
 
-    if (rows.length === PAGE_SIZE) {
-      const last = rows[rows.length - 1];
+    if (hasMore) {
+      const last = sliced[sliced.length - 1];
 
       nextCursor = encodeCursor({
         score: String(last.rank_score),
         createdAt: new Date(last.created_at).toISOString(),
         id: last.id,
+        snapshotTime, // ✅ CRITICAL FIX
       });
     }
 
     const response = { items, nextCursor };
 
     // =========================
-    // 7. CACHE WRITE (SAFE)
+    // 10. CACHE WRITE (SAFE)
     // =========================
     if (redis && cacheKey) {
       try {

@@ -68,14 +68,14 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     const userId = req.user.id;
     const cursorParam = (req.query.cursor as string) || null;
 
-    const cacheKey = await buildBookmarksKey(userId, cursorParam);
-
     // =========================
     // 2. CACHE (SAFE)
     // =========================
     const redis = await getRedisSafe();
+    let cacheKey: string | null = null;
 
     if (redis) {
+      const cacheKey = await buildBookmarksKey(userId, cursorParam);
       try {
         const cached = await redis.get(cacheKey);
         if (cached) {
@@ -214,7 +214,7 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     // =========================
     // 7. CACHE WRITE (SAFE)
     // =========================
-    if (redis) {
+    if (redis && cacheKey) {
       try {
         await redis.set(cacheKey, JSON.stringify(response), { EX: 60 });
       } catch (err) {

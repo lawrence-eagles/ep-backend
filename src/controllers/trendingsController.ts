@@ -19,25 +19,62 @@ async function getRedisSafe() {
   }
 }
 
-// ── Cursor ────────────────────────────────────────────────────────────────────
+// =========================
+// 🔐 CURSOR (STRICT SAFE)
+// =========================
 
 type Cursor = {
   score: string;
   createdAt: string;
   id: string;
+  snapshotTime: string;
 };
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
 function decodeCursor(raw: string): Cursor {
-  return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8")) as Cursor;
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
+  } catch {
+    throw new Error("Invalid cursor");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const c = parsed as Record<string, unknown>;
+
+  if (
+    typeof c.score !== "string" ||
+    !Number.isFinite(Number(c.score)) ||
+    typeof c.createdAt !== "string" ||
+    Number.isNaN(Date.parse(c.createdAt)) ||
+    typeof c.id !== "string" ||
+    !UUID_RE.test(c.id) ||
+    typeof c.snapshotTime !== "string" ||
+    Number.isNaN(Date.parse(c.snapshotTime))
+  ) {
+    throw new Error("Invalid cursor");
+  }
+
+  return c as Cursor;
 }
 
-// ── Row type ──────────────────────────────────────────────────────────────────
+// =========================
+// 🧾 ROW TYPE
+// =========================
 
 interface TrendingRow {
+  [key: string]: unknown;
+
   id: string;
   title: string;
   slug: string;
@@ -57,6 +94,10 @@ interface TrendingRow {
   user_bookmarked: boolean | string;
 }
 
+// =========================
+// 🚀 CONTROLLER
+// =========================
+
 export const trendingFeedVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
@@ -70,13 +111,34 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     const cursorParam = (req.query.cursor as string) || null;
 
     // =========================
-    // 2. REDIS (SAFE + OPTIONAL)
+    // 2. CURSOR
+    // =========================
+    let cursor: Cursor | null = null;
+
+    if (cursorParam) {
+      try {
+        cursor = decodeCursor(cursorParam);
+      } catch {
+        return res.status(400).json({ error: "Invalid cursor" });
+      }
+    }
+
+    // =========================
+    // 3. SNAPSHOT TIME (CRITICAL)
+    // =========================
+    const snapshotTime = cursor
+      ? cursor.snapshotTime
+      : new Date().toISOString();
+
+    // =========================
+    // 4. REDIS (SAFE)
     // =========================
     const redis = await getRedisSafe();
 
-    const cacheKey = await buildTrendingKey(cursorParam);
+    // ✅ FIX: include userId to prevent leakage
+    const cacheKey = await buildTrendingKey(userId, cursorParam);
 
-    // ── CACHE READ (first page only, non-blocking) ────────────────────────────
+    // ── CACHE READ (first page only) ─────────────────────────────
     if (!cursorParam && redis) {
       try {
         const cached = await redis.get(cacheKey);
@@ -88,18 +150,9 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       }
     }
 
-    // ── CURSOR ───────────────────────────────────────────────────────────────
-    let cursor: Cursor | null = null;
-
-    if (cursorParam) {
-      try {
-        cursor = decodeCursor(cursorParam);
-      } catch {
-        return res.status(400).json({ error: "Invalid cursor" });
-      }
-    }
-
-    // ── QUERY ────────────────────────────────────────────────────────────────
+    // =========================
+    // 5. QUERY (STABLE RANKING)
+    // =========================
     const query = sql`
       WITH scored_posts AS (
         SELECT
@@ -122,12 +175,12 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
 
           (
             (COALESCE(p.score, 0) * 3)
-            - EXTRACT(EPOCH FROM NOW() - COALESCE(p.created_at, NOW())) * 0.0001
+            - EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at) * 0.0001
           ) AS trend_score
 
         FROM posts p
         LEFT JOIN categories c ON c.id = p.category_id
-        LEFT JOIN sources     s ON s.id = p.source_id
+        LEFT JOIN sources s ON s.id = p.source_id
       )
 
       SELECT
@@ -171,16 +224,22 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
         sp.created_at  DESC,
         sp.id          DESC
 
-      LIMIT ${PAGE_SIZE}
+      LIMIT ${PAGE_SIZE + 1} -- ✅ FIX
     `;
 
     const result = await db.execute(query);
-
-    // ✅ FIX: safe casting
     const rows = result.rows as unknown as TrendingRow[];
 
-    // ── MAP ─────────────────────────────────────────────────────────────────
-    const items = rows.map((p) => ({
+    // =========================
+    // 6. PAGINATION FIX
+    // =========================
+    const hasMore = rows.length > PAGE_SIZE;
+    const sliced = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
+
+    // =========================
+    // 7. MAP RESPONSE
+    // =========================
+    const items = sliced.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
@@ -204,22 +263,27 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       isBookmarked: p.user_bookmarked === true || p.user_bookmarked === "t",
     }));
 
-    // ── NEXT CURSOR ──────────────────────────────────────────────────────────
+    // =========================
+    // 8. NEXT CURSOR (FIXED)
+    // =========================
     let nextCursor: string | null = null;
 
-    if (rows.length === PAGE_SIZE) {
-      const last = rows[rows.length - 1];
+    if (hasMore) {
+      const last = sliced[sliced.length - 1];
 
       nextCursor = encodeCursor({
         score: String(last.trend_score),
         createdAt: new Date(last.created_at).toISOString(),
         id: last.id,
+        snapshotTime,
       });
     }
 
     const response = { items, nextCursor };
 
-    // ── CACHE WRITE (first page only, non-blocking) ───────────────────────────
+    // =========================
+    // 9. CACHE WRITE (SAFE)
+    // =========================
     if (!cursorParam && redis) {
       try {
         await redis.set(cacheKey, JSON.stringify(response), {

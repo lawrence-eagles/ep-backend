@@ -29,8 +29,33 @@ function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function decodeCursor(raw: string): Cursor {
-  return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8")) as Cursor;
+  const decoded = JSON.parse(
+    Buffer.from(raw, "base64url").toString("utf-8"),
+  ) as unknown;
+
+  if (!decoded || typeof decoded !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const candidate = decoded as Record<string, unknown>;
+
+  if (
+    typeof candidate.createdAt !== "string" ||
+    Number.isNaN(Date.parse(candidate.createdAt)) ||
+    typeof candidate.id !== "string" ||
+    !UUID_RE.test(candidate.id)
+  ) {
+    throw new Error("Invalid cursor");
+  }
+
+  return {
+    createdAt: candidate.createdAt,
+    id: candidate.id,
+  };
 }
 
 // ── Row type ──────────────────────────────────────────────────────────────────
@@ -73,10 +98,9 @@ export const followsHeadlineVersionOne = async (
     // 2. REDIS (SAFE + OPTIONAL)
     // =========================
     const redis = await getRedisSafe();
-
     const cacheKey = await buildFollowingKey(userId, cursorParam);
 
-    // ── CACHE READ (non-blocking) ────────────────────────────────────────────
+    // ── CACHE READ ───────────────────────────────────────────────────────────
     if (redis) {
       try {
         const cached = await redis.get(cacheKey);
@@ -99,7 +123,9 @@ export const followsHeadlineVersionOne = async (
       }
     }
 
-    // ── QUERY ────────────────────────────────────────────────────────────────
+    // =========================
+    // 🔥 QUERY (N + 1)
+    // =========================
     const query = sql`
       SELECT
         p.id,
@@ -159,16 +185,22 @@ export const followsHeadlineVersionOne = async (
         p.created_at DESC,
         p.id DESC
 
-      LIMIT ${PAGE_SIZE}
+      LIMIT ${PAGE_SIZE + 1}
     `;
 
     const result = await db.execute(query);
-
-    // ✅ FIX: proper cast through unknown
     const rows = result.rows as unknown as FollowingRow[];
 
+    // =========================
+    // 🔥 PAGINATION FIX
+    // =========================
+    const hasNextPage = rows.length > PAGE_SIZE;
+
+    // Only return PAGE_SIZE items
+    const pageRows = hasNextPage ? rows.slice(0, PAGE_SIZE) : rows;
+
     // ── MAP ─────────────────────────────────────────────────────────────────
-    const items = rows.map((p) => ({
+    const items = pageRows.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
@@ -192,11 +224,11 @@ export const followsHeadlineVersionOne = async (
       isBookmarked: p.user_bookmarked === true || p.user_bookmarked === "t",
     }));
 
-    // ── NEXT CURSOR ──────────────────────────────────────────────────────────
+    // ── NEXT CURSOR (only if real next page exists) ──────────────────────────
     let nextCursor: string | null = null;
 
-    if (rows.length === PAGE_SIZE) {
-      const last = rows[rows.length - 1];
+    if (hasNextPage) {
+      const last = pageRows[pageRows.length - 1];
 
       nextCursor = encodeCursor({
         createdAt: new Date(last.created_at).toISOString(),
@@ -206,7 +238,7 @@ export const followsHeadlineVersionOne = async (
 
     const response = { items, nextCursor };
 
-    // ── CACHE WRITE (non-blocking) ───────────────────────────────────────────
+    // ── CACHE WRITE ──────────────────────────────────────────────────────────
     if (redis) {
       try {
         await redis.set(cacheKey, JSON.stringify(response), { EX: 60 });
