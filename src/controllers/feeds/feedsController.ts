@@ -1,11 +1,10 @@
 import type { Request, Response } from "express";
 import { sql } from "drizzle-orm";
-import { getRedis } from "../lib/redis";
-import { db } from "../db";
-import { buildTrendingKey } from "../utils/cache";
+import { getRedis } from "../../lib/redis";
+import { db } from "../../db";
+import { buildFeedKey } from "../../utils/cache";
 
 const PAGE_SIZE = 20;
-const CACHE_TTL = 30;
 
 // =========================
 // 🔥 SAFE REDIS HELPER
@@ -19,38 +18,32 @@ async function getRedisSafe() {
   }
 }
 
-// =========================
-// 🔐 CURSOR (STRICT SAFE)
-// =========================
+// ── Cursor ─────────────────────────────────────────────────────────────
 
 type Cursor = {
   score: string;
   createdAt: string;
   id: string;
-  snapshotTime: string;
+  snapshotTime: string; // ✅ FIX: ensures stable ranking across pages
 };
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function decodeCursor(raw: string): Cursor {
-  let parsed: unknown;
+  const decoded = JSON.parse(
+    Buffer.from(raw, "base64url").toString("utf-8"),
+  ) as unknown;
 
-  try {
-    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
-  } catch {
+  if (!decoded || typeof decoded !== "object") {
     throw new Error("Invalid cursor");
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid cursor");
-  }
-
-  const c = parsed as Record<string, unknown>;
+  const c = decoded as Record<string, unknown>;
 
   if (
     typeof c.score !== "string" ||
@@ -68,11 +61,9 @@ function decodeCursor(raw: string): Cursor {
   return c as Cursor;
 }
 
-// =========================
-// 🧾 ROW TYPE
-// =========================
+// ── Row type ───────────────────────────────────────────────────────────
 
-interface TrendingRow {
+interface FeedRow {
   [key: string]: unknown;
 
   id: string;
@@ -84,21 +75,19 @@ interface TrendingRow {
   created_at: Date;
   category_id: string | null;
   source_id: string | null;
-  category_name: string | null;
-  source_name: string | null;
-  source_website: string | null;
   likes_count: number | string;
   comments_count: number | string;
-  trend_score: number | string;
+  category: string | null;
+  source_name: string | null;
+  source_url: string | null;
+  rank_score: number | string;
   user_liked: boolean | string;
   user_bookmarked: boolean | string;
 }
 
-// =========================
-// 🚀 CONTROLLER
-// =========================
+// ── Controller ─────────────────────────────────────────────────────────
 
-export const trendingFeedVersionOne = async (req: Request, res: Response) => {
+export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
   try {
     // =========================
     // 1. VALIDATION
@@ -124,7 +113,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // 3. SNAPSHOT TIME (CRITICAL)
+    // 3. SNAPSHOT TIME (CRITICAL FIX)
     // =========================
     const snapshotTime = cursor
       ? cursor.snapshotTime
@@ -134,27 +123,46 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     // 4. REDIS (SAFE)
     // =========================
     const redis = await getRedisSafe();
+    let cacheKey: string | null = null;
 
-    // ✅ FIX: include userId to prevent leakage
-    const cacheKey = await buildTrendingKey(userId, cursorParam);
-
-    // ── CACHE READ (first page only) ─────────────────────────────
-    if (!cursorParam && redis) {
+    if (redis) {
       try {
+        const [userVersion, globalVersion] = await Promise.all([
+          redis.get(`feed:${userId}:version`),
+          redis.get("feed:global:version"),
+        ]);
+
+        cacheKey = await buildFeedKey(userId, cursorParam, {
+          userVersion,
+          globalVersion,
+        });
+
         const cached = await redis.get(cacheKey);
         if (cached) {
           return res.json(JSON.parse(cached));
         }
       } catch (err) {
-        console.error("REDIS GET ERROR:", err);
+        console.error("REDIS READ ERROR:", err);
       }
     }
 
     // =========================
-    // 5. QUERY (STABLE RANKING)
+    // 5. STABLE RANKING (FIXED)
+    // =========================
+    const rankingExpr = sql<number>`
+    (
+      COALESCE(ub.score, 0) * 5 +
+      COALESCE(p.score, 0) * 2 +
+      CASE WHEN f.user_id IS NOT NULL THEN 3 ELSE 0 END -
+      FLOOR(EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at)) * 0.0001
+    )
+    `;
+
+    // =========================
+    // 6. QUERY (LIMIT + 1 FIX)
     // =========================
     const query = sql`
-      WITH scored_posts AS (
+      WITH ranked_posts AS (
         SELECT
           p.id,
           p.title,
@@ -165,54 +173,55 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
           p.created_at,
           p.category_id,
           p.source_id,
-
           p.likes_count,
           p.comments_count,
-
-          c.name AS category_name,
-          s.name AS source_name,
-          s.url  AS source_website,
-
-          (
-            (COALESCE(p.score, 0) * 3)
-            - EXTRACT(EPOCH FROM ${snapshotTime}::timestamp - p.created_at) * 0.0001
-          ) AS trend_score
+          c.name  AS category,
+          s.name  AS source_name,
+          s.url   AS source_url,
+          ${rankingExpr} AS rank_score
 
         FROM posts p
+
+        LEFT JOIN user_behavior ub
+          ON ub.category_id = p.category_id
+         AND ub.user_id = ${userId}
+
+        LEFT JOIN follows f
+          ON f.category_id = p.category_id
+         AND f.user_id = ${userId}
+
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN sources s ON s.id = p.source_id
       )
 
       SELECT
-        sp.*,
+        rp.*,
 
         EXISTS (
           SELECT 1 FROM likes l
-          WHERE l.post_id = sp.id
-            AND l.user_id = ${userId}
+          WHERE l.post_id = rp.id AND l.user_id = ${userId}
         ) AS user_liked,
 
         EXISTS (
           SELECT 1 FROM bookmarks b
-          WHERE b.post_id = sp.id
-            AND b.user_id = ${userId}
+          WHERE b.post_id = rp.id AND b.user_id = ${userId}
         ) AS user_bookmarked
 
-      FROM scored_posts sp
+      FROM ranked_posts rp
 
       ${
         cursor
           ? sql`
         WHERE (
-          sp.trend_score < ${cursor.score}::float
+          rp.rank_score < ${cursor.score}::float
           OR (
-            sp.trend_score = ${cursor.score}::float
-            AND sp.created_at < ${cursor.createdAt}::timestamp
+            rp.rank_score = ${cursor.score}::float
+            AND rp.created_at < ${cursor.createdAt}::timestamp
           )
           OR (
-            sp.trend_score = ${cursor.score}::float
-            AND sp.created_at = ${cursor.createdAt}::timestamp
-            AND sp.id < ${cursor.id}::uuid
+            rp.rank_score = ${cursor.score}::float
+            AND rp.created_at = ${cursor.createdAt}::timestamp
+            AND rp.id < ${cursor.id}::uuid
           )
         )
       `
@@ -220,41 +229,39 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       }
 
       ORDER BY
-        sp.trend_score DESC,
-        sp.created_at  DESC,
-        sp.id          DESC
+        rp.rank_score DESC,
+        rp.created_at DESC,
+        rp.id DESC
 
       LIMIT ${PAGE_SIZE + 1} -- ✅ FIX
     `;
 
     const result = await db.execute(query);
-    const rows = result.rows as unknown as TrendingRow[];
+    const rows = result.rows as unknown as FeedRow[];
 
     // =========================
-    // 6. PAGINATION FIX
+    // 7. PAGINATION FIX
     // =========================
     const hasMore = rows.length > PAGE_SIZE;
     const sliced = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
 
     // =========================
-    // 7. MAP RESPONSE
+    // 8. MAP RESPONSE
     // =========================
     const items = sliced.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
-
       imageUrl: p.image_url,
       summary: p.description,
       sourceUrl: p.url,
-
       createdAt: new Date(p.created_at).toISOString(),
 
-      category: p.category_name,
+      category: p.category,
       categoryId: p.category_id,
 
       sourceName: p.source_name,
-      sourceWebsite: p.source_website,
+      sourceWebsite: p.source_url,
 
       likesCount: Number(p.likes_count) || 0,
       commentsCount: Number(p.comments_count) || 0,
@@ -264,7 +271,7 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
     }));
 
     // =========================
-    // 8. NEXT CURSOR (FIXED)
+    // 9. NEXT CURSOR (FIXED)
     // =========================
     let nextCursor: string | null = null;
 
@@ -272,31 +279,29 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       const last = sliced[sliced.length - 1];
 
       nextCursor = encodeCursor({
-        score: String(last.trend_score),
+        score: String(last.rank_score),
         createdAt: new Date(last.created_at).toISOString(),
         id: last.id,
-        snapshotTime,
+        snapshotTime, // ✅ CRITICAL FIX
       });
     }
 
     const response = { items, nextCursor };
 
     // =========================
-    // 9. CACHE WRITE (SAFE)
+    // 10. CACHE WRITE (SAFE)
     // =========================
-    if (!cursorParam && redis) {
+    if (redis && cacheKey) {
       try {
-        await redis.set(cacheKey, JSON.stringify(response), {
-          EX: CACHE_TTL,
-        });
+        await redis.set(cacheKey, JSON.stringify(response), { EX: 30 });
       } catch (err) {
-        console.error("REDIS SET ERROR:", err);
+        console.error("REDIS WRITE ERROR:", err);
       }
     }
 
     return res.json(response);
   } catch (err) {
-    console.error("TRENDING FEED ERROR:", err);
-    return res.status(500).json({ error: "Trending feed failed" });
+    console.error("FEED ERROR:", err);
+    return res.status(500).json({ error: "Feed failed" });
   }
 };

@@ -1,10 +1,16 @@
 import type { Request, Response } from "express";
 import { sql } from "drizzle-orm";
-import { getRedis } from "../lib/redis";
-import { db } from "../db";
-import { buildFollowingKey } from "../utils/cache";
+import { getRedis } from "../../lib/redis";
+import { db } from "../../db";
+import { buildBookmarksKey } from "../../utils/cache";
 
 const PAGE_SIZE = 20;
+
+// =========================
+// 🔒 CONSTANTS
+// =========================
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // =========================
 // 🔥 SAFE REDIS HELPER
@@ -29,38 +35,39 @@ function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 function decodeCursor(raw: string): Cursor {
-  const decoded = JSON.parse(
-    Buffer.from(raw, "base64url").toString("utf-8"),
-  ) as unknown;
+  let parsed: unknown;
 
-  if (!decoded || typeof decoded !== "object") {
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
+  } catch {
     throw new Error("Invalid cursor");
   }
 
-  const candidate = decoded as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const obj = parsed as Record<string, unknown>;
 
   if (
-    typeof candidate.createdAt !== "string" ||
-    Number.isNaN(Date.parse(candidate.createdAt)) ||
-    typeof candidate.id !== "string" ||
-    !UUID_RE.test(candidate.id)
+    typeof obj.createdAt !== "string" ||
+    Number.isNaN(Date.parse(obj.createdAt)) ||
+    typeof obj.id !== "string" ||
+    !UUID_RE.test(obj.id)
   ) {
     throw new Error("Invalid cursor");
   }
 
   return {
-    createdAt: candidate.createdAt,
-    id: candidate.id,
+    createdAt: obj.createdAt,
+    id: obj.id,
   };
 }
 
 // ── Row type ──────────────────────────────────────────────────────────────────
 
-interface FollowingRow {
+interface BookmarkRow extends Record<string, unknown> {
   id: string;
   title: string;
   slug: string;
@@ -79,10 +86,10 @@ interface FollowingRow {
   user_bookmarked: boolean | string;
 }
 
-export const followsHeadlineVersionOne = async (
-  req: Request,
-  res: Response,
-) => {
+// =========================
+// 🔥 CONTROLLER
+// =========================
+export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
     // 1. VALIDATION
@@ -95,24 +102,28 @@ export const followsHeadlineVersionOne = async (
     const cursorParam = (req.query.cursor as string) || null;
 
     // =========================
-    // 2. REDIS (SAFE + OPTIONAL)
+    // 2. REDIS
     // =========================
     const redis = await getRedisSafe();
-    const cacheKey = await buildFollowingKey(userId, cursorParam);
 
-    // ── CACHE READ ───────────────────────────────────────────────────────────
+    let cacheKey: string | null = null;
+
     if (redis) {
+      cacheKey = await buildBookmarksKey(userId, cursorParam);
+
       try {
         const cached = await redis.get(cacheKey);
         if (cached) {
           return res.json(JSON.parse(cached));
         }
       } catch (err) {
-        console.error("REDIS GET ERROR:", err);
+        console.error("REDIS READ ERROR:", err);
       }
     }
 
-    // ── CURSOR ───────────────────────────────────────────────────────────────
+    // =========================
+    // 3. CURSOR (SAFE)
+    // =========================
     let cursor: Cursor | null = null;
 
     if (cursorParam) {
@@ -124,7 +135,7 @@ export const followsHeadlineVersionOne = async (
     }
 
     // =========================
-    // 🔥 QUERY (N + 1)
+    // 4. QUERY
     // =========================
     const query = sql`
       SELECT
@@ -153,24 +164,23 @@ export const followsHeadlineVersionOne = async (
         ) AS user_liked,
 
         EXISTS (
-          SELECT 1 FROM bookmarks b
-          WHERE b.post_id = p.id
-            AND b.user_id = ${userId}
+          SELECT 1 FROM bookmarks b2
+          WHERE b2.post_id = p.id
+            AND b2.user_id = ${userId}
         ) AS user_bookmarked
 
-      FROM posts p
-
-      JOIN follows f
-        ON f.category_id = p.category_id
-       AND f.user_id = ${userId}
+      FROM bookmarks b
+      JOIN posts p ON p.id = b.post_id
 
       LEFT JOIN categories c ON c.id = p.category_id
       LEFT JOIN sources     s ON s.id = p.source_id
 
+      WHERE b.user_id = ${userId}
+
       ${
         cursor
           ? sql`
-        WHERE (
+        AND (
           p.created_at < ${cursor.createdAt}::timestamp
           OR (
             p.created_at = ${cursor.createdAt}::timestamp
@@ -188,18 +198,18 @@ export const followsHeadlineVersionOne = async (
       LIMIT ${PAGE_SIZE + 1}
     `;
 
-    const result = await db.execute(query);
-    const rows = result.rows as unknown as FollowingRow[];
+    const result = await db.execute<BookmarkRow>(query);
+    const rows = result.rows;
 
     // =========================
-    // 🔥 PAGINATION FIX
+    // 5. PAGINATION
     // =========================
     const hasNextPage = rows.length > PAGE_SIZE;
-
-    // Only return PAGE_SIZE items
     const pageRows = hasNextPage ? rows.slice(0, PAGE_SIZE) : rows;
 
-    // ── MAP ─────────────────────────────────────────────────────────────────
+    // =========================
+    // 6. MAP RESPONSE
+    // =========================
     const items = pageRows.map((p) => ({
       id: p.id,
       title: p.title,
@@ -224,7 +234,9 @@ export const followsHeadlineVersionOne = async (
       isBookmarked: p.user_bookmarked === true || p.user_bookmarked === "t",
     }));
 
-    // ── NEXT CURSOR (only if real next page exists) ──────────────────────────
+    // =========================
+    // 7. NEXT CURSOR
+    // =========================
     let nextCursor: string | null = null;
 
     if (hasNextPage) {
@@ -238,18 +250,22 @@ export const followsHeadlineVersionOne = async (
 
     const response = { items, nextCursor };
 
-    // ── CACHE WRITE ──────────────────────────────────────────────────────────
-    if (redis) {
+    // =========================
+    // 8. CACHE WRITE
+    // =========================
+    if (redis && cacheKey) {
       try {
-        await redis.set(cacheKey, JSON.stringify(response), { EX: 60 });
+        await redis.set(cacheKey, JSON.stringify(response), {
+          EX: 300, // was 60
+        });
       } catch (err) {
-        console.error("REDIS SET ERROR:", err);
+        console.error("REDIS WRITE ERROR:", err);
       }
     }
 
     return res.json(response);
   } catch (err) {
-    console.error("FOLLOWING FEED ERROR:", err);
-    return res.status(500).json({ error: "Following feed failed" });
+    console.error("BOOKMARKS FEED ERROR:", err);
+    return res.status(500).json({ error: "Bookmarks feed failed" });
   }
 };
