@@ -7,6 +7,12 @@ import { buildBookmarksKey } from "../utils/cache";
 const PAGE_SIZE = 20;
 
 // =========================
+// 🔒 CONSTANTS
+// =========================
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// =========================
 // 🔥 SAFE REDIS HELPER
 // =========================
 async function getRedisSafe() {
@@ -30,14 +36,38 @@ function encodeCursor(cursor: Cursor): string {
 }
 
 function decodeCursor(raw: string): Cursor {
-  return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8")) as Cursor;
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
+  } catch {
+    throw new Error("Invalid cursor");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid cursor");
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  if (
+    typeof obj.createdAt !== "string" ||
+    Number.isNaN(Date.parse(obj.createdAt)) ||
+    typeof obj.id !== "string" ||
+    !UUID_RE.test(obj.id)
+  ) {
+    throw new Error("Invalid cursor");
+  }
+
+  return {
+    createdAt: obj.createdAt,
+    id: obj.id,
+  };
 }
 
 // ── Row type ──────────────────────────────────────────────────────────────────
 
-interface BookmarkRow {
-  [key: string]: unknown; // ✅ FIX
-
+interface BookmarkRow extends Record<string, unknown> {
   id: string;
   title: string;
   slug: string;
@@ -56,6 +86,9 @@ interface BookmarkRow {
   user_bookmarked: boolean | string;
 }
 
+// =========================
+// 🔥 CONTROLLER
+// =========================
 export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
@@ -69,13 +102,15 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     const cursorParam = (req.query.cursor as string) || null;
 
     // =========================
-    // 2. CACHE (SAFE)
+    // 2. REDIS
     // =========================
     const redis = await getRedisSafe();
+
     let cacheKey: string | null = null;
 
     if (redis) {
-      const cacheKey = await buildBookmarksKey(userId, cursorParam);
+      cacheKey = await buildBookmarksKey(userId, cursorParam);
+
       try {
         const cached = await redis.get(cacheKey);
         if (cached) {
@@ -87,7 +122,7 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // 3. CURSOR
+    // 3. CURSOR (SAFE)
     // =========================
     let cursor: Cursor | null = null;
 
@@ -135,8 +170,7 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
         ) AS user_bookmarked
 
       FROM bookmarks b
-      JOIN posts p
-        ON p.id = b.post_id
+      JOIN posts p ON p.id = b.post_id
 
       LEFT JOIN categories c ON c.id = p.category_id
       LEFT JOIN sources     s ON s.id = p.source_id
@@ -161,17 +195,22 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
         p.created_at DESC,
         p.id DESC
 
-      LIMIT ${PAGE_SIZE}
+      LIMIT ${PAGE_SIZE + 1}
     `;
 
-    // ✅ FIX: Proper typing (NO unsafe cast)
     const result = await db.execute<BookmarkRow>(query);
     const rows = result.rows;
 
     // =========================
-    // 5. MAP RESPONSE
+    // 5. PAGINATION
     // =========================
-    const items = rows.map((p) => ({
+    const hasNextPage = rows.length > PAGE_SIZE;
+    const pageRows = hasNextPage ? rows.slice(0, PAGE_SIZE) : rows;
+
+    // =========================
+    // 6. MAP RESPONSE
+    // =========================
+    const items = pageRows.map((p) => ({
       id: p.id,
       title: p.title,
       slug: p.slug,
@@ -196,12 +235,12 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     }));
 
     // =========================
-    // 6. NEXT CURSOR
+    // 7. NEXT CURSOR
     // =========================
     let nextCursor: string | null = null;
 
-    if (rows.length === PAGE_SIZE) {
-      const last = rows[rows.length - 1];
+    if (hasNextPage) {
+      const last = pageRows[pageRows.length - 1];
 
       nextCursor = encodeCursor({
         createdAt: new Date(last.created_at).toISOString(),
@@ -212,11 +251,13 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
     const response = { items, nextCursor };
 
     // =========================
-    // 7. CACHE WRITE (SAFE)
+    // 8. CACHE WRITE
     // =========================
     if (redis && cacheKey) {
       try {
-        await redis.set(cacheKey, JSON.stringify(response), { EX: 60 });
+        await redis.set(cacheKey, JSON.stringify(response), {
+          EX: 60,
+        });
       } catch (err) {
         console.error("REDIS WRITE ERROR:", err);
       }
