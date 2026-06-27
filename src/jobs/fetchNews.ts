@@ -16,7 +16,7 @@ import { calculatePostScore } from "./score";
 
 import type { RawArticle, ScrapedArticle, EnrichedArticle } from "./types";
 
-// ── Config ───────────────────────────────────────────────────────────────
+// ── Config ─────────────────────────────────────────
 
 const RSS_PARSER = new Parser({ timeout: 10_000 });
 const FEED_CONCURRENCY = 5;
@@ -27,7 +27,7 @@ const DEDUPE_TTL_SECONDS = 86_400;
 const MAX_ITEMS_PER_FEED = 20;
 const MIN_CONTENT_LENGTH = 200;
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────
 
 function isSafeUrl(raw: string): boolean {
   try {
@@ -82,16 +82,33 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-// 🔥 Redis safe wrapper
-async function safeRedis<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+// ── SAFE REDIS HELPERS ────────────────────────────
+
+async function safeRedis<T>(
+  fn: (redis: Awaited<ReturnType<typeof getRedis>>) => Promise<T>,
+  fallback: T,
+): Promise<T> {
   try {
-    return await withTimeout(fn(), 2000);
+    const redis = await getRedis();
+    return await withTimeout(fn(redis), 2000);
   } catch {
     return fallback;
   }
 }
 
-// 🔥 Content Quality Gate (CRITICAL)
+async function safeCacheInvalidate(
+  fn: (redis: Awaited<ReturnType<typeof getRedis>>) => Promise<void>,
+) {
+  try {
+    const redis = await getRedis();
+    await fn(redis);
+  } catch (err) {
+    console.error("REDIS ERROR (non-blocking):", err);
+  }
+}
+
+// ── Content Quality ───────────────────────────────
+
 function isValidContent(content: string | null): boolean {
   if (!content) return false;
 
@@ -107,12 +124,10 @@ function isValidContent(content: string | null): boolean {
 
   if (junkPatterns.some((r) => r.test(cleaned))) return false;
 
-  const sentenceCount = cleaned.split(". ").length;
-
-  return sentenceCount >= 3;
+  return cleaned.split(". ").length >= 3;
 }
 
-// ── Zod schema ───────────────────────────────────────────────────────────
+// ── Zod Schema ───────────────────────────────────
 
 const RssItemSchema = z.object({
   title: z.string().min(1),
@@ -142,7 +157,7 @@ function parseRssItem(item: Parser.Item, feedUrl: string): RawArticle | null {
   };
 }
 
-// ── Main Function ─────────────────────────────────────────────────────────
+// ── MAIN FUNCTION ────────────────────────────────
 
 export const fetchNews: InngestFunction.Any = inngest.createFunction(
   {
@@ -154,18 +169,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
   },
 
   async ({ step, logger }) => {
-    // ── Redis Init ────────────────────────────────────────────────────
-
-    let redis: Awaited<ReturnType<typeof getRedis>> | null = null;
-
-    try {
-      redis = await getRedis();
-    } catch (err) {
-      logger.error("Redis connection failed", err);
-      redis = null;
-    }
-
-    // ── STEP 1: Fetch RSS ─────────────────────────────────────────────
+    // ── STEP 1: FETCH RSS ───────────────────────
 
     const rawArticles = await step.run("fetch-rss-feeds", async () => {
       const results: RawArticle[] = [];
@@ -196,7 +200,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
     if (!rawArticles.length) return { processed: 0 };
 
-    // 🔥 FIX 1: MEMORY DEDUPE (prevents Redis stampede)
+    // ── MEMORY DEDUPE ───────────────────────────
 
     const memorySeen = new Set<string>();
     const memoryDeduped = rawArticles.filter((a) => {
@@ -205,7 +209,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       return true;
     });
 
-    // ── STEP 2: Deduplication ─────────────────────────────────────────
+    // ── STEP 2: REDIS + DB DEDUPE ───────────────
 
     const uniqueArticles: RawArticle[] = await step.run(
       "deduplicate",
@@ -213,14 +217,10 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
         const urls = memoryDeduped.map((a) => a.url);
         const keys = urls.map(getDedupeKey);
 
-        let redisResults: (string | null)[] = new Array(keys.length).fill(null);
-
-        if (redis) {
-          redisResults = await safeRedis(
-            () => redis!.mGet(keys),
-            new Array(keys.length).fill(null),
-          );
-        }
+        const redisResults = await safeRedis(
+          (redis) => redis.mGet(keys),
+          new Array(keys.length).fill(null),
+        );
 
         const seen = new Set<string>();
         redisResults.forEach((val, i) => {
@@ -248,7 +248,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
     if (!uniqueArticles.length) return { processed: 0 };
 
-    // ── STEP 3: Scraping ─────────────────────────────────────────────
+    // ── STEP 3: SCRAPE ──────────────────────────
 
     const scrapedArticles: ScrapedArticle[] = await step.run(
       "scrape-content",
@@ -289,7 +289,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
     if (!scrapedArticles.length) return { processed: 0 };
 
-    // ── STEP 4: AI (STRICT GATING) ────────────────────────────────────
+    // ── STEP 4: AI ──────────────────────────────
 
     const enrichedArticles: EnrichedArticle[] = await step.run(
       "ai-summarize",
@@ -320,26 +320,6 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           ),
         );
 
-        // const summaries: string[] = [];
-
-        // results.forEach((r) => {
-        //   if (r.status === "fulfilled") {
-        //     r.value.summaries.forEach((s) => {
-        //       if (s?.summary) summaries.push(s.summary);
-        //     });
-        //   }
-        // });
-
-        // let summaryIndex = 0;
-
-        // return validArticles.map((article): EnrichedArticle => {
-        //   const summary = summaries[summaryIndex++] ?? null;
-
-        //   return summary
-        //     ? { ...article, summary }
-        //     : { ...article, summary: null };
-        // });
-
         const enriched: EnrichedArticle[] = [];
 
         results.forEach((r, batchIdx) => {
@@ -353,6 +333,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               r.status === "fulfilled"
                 ? (r.value.summaries[j]?.summary ?? null)
                 : null;
+
             enriched.push({ ...article, summary });
           });
         });
@@ -363,7 +344,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
     if (!enrichedArticles.length) return { processed: 0 };
 
-    // ── STEP 5: Save ─────────────────────────────────────────────────
+    // ── STEP 5: SAVE ────────────────────────────
 
     const saveResults = await step.run("save", async () => {
       const limit = pLimit(SAVE_CONCURRENCY);
@@ -371,7 +352,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
       const results = await Promise.allSettled(
         enrichedArticles.map((article) =>
           limit(async () => {
-            if (!article.summary) return null; // 🔥 HARD BLOCK
+            if (!article.summary) return null;
 
             const [source, categoryId] = await Promise.all([
               getOrCreateSource(article.feedUrl),
@@ -400,15 +381,12 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
             if (!inserted) return null;
 
-            if (redis) {
-              await safeRedis(
-                () =>
-                  redis!.set(getDedupeKey(article.url), "1", {
-                    EX: DEDUPE_TTL_SECONDS,
-                  }),
-                null,
-              );
-            }
+            // ✅ FIXED: return type now Promise<void> + non-blocking
+            await safeCacheInvalidate(async (redis) => {
+              await redis.set(getDedupeKey(article.url), "1", {
+                EX: DEDUPE_TTL_SECONDS,
+              });
+            });
 
             return article.url;
           }),

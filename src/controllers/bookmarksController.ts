@@ -4,6 +4,12 @@ import { db } from "../db";
 import { getRedis } from "../lib/redis";
 
 // =========================
+// 🔒 CONSTANTS
+// =========================
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// =========================
 // 🔥 SAFE REDIS HELPER
 // =========================
 async function safeCacheInvalidate(
@@ -32,9 +38,12 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
   const userId = req.user.id;
   const { postId } = req.body;
 
-  if (!postId) {
+  // =========================
+  // 2. INPUT VALIDATION
+  // =========================
+  if (!postId || typeof postId !== "string" || !UUID_RE.test(postId)) {
     return res.status(400).json({
-      error: "Missing postId",
+      error: "Invalid postId",
     });
   }
 
@@ -43,7 +52,7 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
 
   try {
     // =========================
-    // 2. TRANSACTION (SOURCE OF TRUTH)
+    // 3. TRANSACTION (SOURCE OF TRUTH)
     // =========================
     await db.transaction(async (tx) => {
       const postResult = await tx.execute<{
@@ -94,7 +103,7 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 3. RESPONSE FIRST (🔥 IMPORTANT)
+    // 4. RESPONSE FIRST
     // =========================
     res.status(200).json({
       success: true,
@@ -102,7 +111,7 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 4. CACHE INVALIDATION (NON-BLOCKING)
+    // 5. CACHE INVALIDATION (NON-BLOCKING)
     // =========================
     if (isNewBookmark && slug) {
       void safeCacheInvalidate(async (redis) => {
@@ -141,9 +150,9 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
     return res.status(401).json({ error: "Unauthorized user" });
   }
 
-  if (!postId) {
+  if (!postId || typeof postId !== "string" || !UUID_RE.test(postId)) {
     return res.status(400).json({
-      error: "Missing postId",
+      error: "Invalid postId",
     });
   }
 
