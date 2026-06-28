@@ -36,20 +36,22 @@ async function rateLimit(userId: string, keySuffix: string) {
   if (!redis) return;
 
   const key = `rate:${keySuffix}:${userId}`;
+  let count: number;
 
   try {
-    const count = await redis.incr(key);
+    count = await redis.incr(key);
 
     if (count === 1) {
       await redis.expire(key, RATE_LIMIT_WINDOW);
     }
-
-    if (count > RATE_LIMIT_MAX) {
-      throw new Error("Too many requests");
-    }
   } catch (err) {
     console.error("RATE LIMIT ERROR:", err);
-    // fail open
+    // fail open only for Redis failures
+    return;
+  }
+
+  if (count > RATE_LIMIT_MAX) {
+    throw new Error("Too many requests");
   }
 }
 
