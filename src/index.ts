@@ -11,6 +11,7 @@ import followsRoutes from "./routes/followsRoutes";
 import likesRoutes from "./routes/likesRoutes";
 import sharesRoutes from "./routes/sharesRoutes";
 import feedsRoutes from "./routes/feedsRoutes";
+import commentsRoutes from "./routes/commentsRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -42,6 +43,7 @@ app.use("/api/v1/categories", categoriesRoutes);
 app.use("/api/v1/follows", followsRoutes);
 app.use("/api/v1/likes", likesRoutes);
 app.use("/api/v1/shares", sharesRoutes);
+app.use("/api/v1/comments", commentsRoutes);
 
 app.listen(env.PORT, () =>
   console.log("Eaglespress sever started and listening on port", env.PORT),
