@@ -27,7 +27,6 @@ async function getRedisSafe() {
   }
 }
 
-// Review this for bugs this is different from the other rate limit implementation
 // =========================
 // 🚦 RATE LIMIT
 // =========================
