@@ -32,20 +32,22 @@ async function rateLimit(userId: string, action: string): Promise<void> {
   if (!redis) return; // fail open
 
   const key = `rate:${action}:${userId}`;
+  let count: number;
 
   try {
-    const count = await redis.incr(key);
+    count = await redis.incr(key);
 
     if (count === 1) {
       await redis.expire(key, RATE_LIMIT_WINDOW);
     }
-
-    if (count > RATE_LIMIT_MAX) {
-      throw new Error("Too many requests");
-    }
   } catch (err) {
     console.error("RATE LIMIT ERROR:", err);
     // fail open
+    return;
+  }
+
+  if (count > RATE_LIMIT_MAX) {
+    throw new Error("Too many requests");
   }
 }
 
@@ -142,6 +144,8 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
           SELECT id FROM comments
           WHERE id = ${parentId}
             AND post_id = ${postId}
+            AND post_id = ${postId}
+            AND parent_id IS NULL
           LIMIT 1
         `);
 

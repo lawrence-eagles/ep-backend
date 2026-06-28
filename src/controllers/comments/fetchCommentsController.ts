@@ -8,6 +8,8 @@ import { buildCommentsKey } from "../../utils/cache";
 const PAGE_SIZE = 10;
 const REPLIES_PAGE_SIZE = 5;
 const CACHE_TTL = 60;
+const RATE_LIMIT_WINDOW = 60;
+const RATE_LIMIT_MAX = 60;
 
 // ── Regex ──────────────────────────────────────────────
 const UUID_RE =
@@ -22,6 +24,32 @@ async function getRedisSafe() {
   } catch (err) {
     console.error("REDIS INIT ERROR:", err);
     return null;
+  }
+}
+
+// Review this for bugs
+// =========================
+// 🚦 RATE LIMIT
+// =========================
+async function rateLimit(userId: string, keySuffix: string) {
+  const redis = await getRedisSafe();
+  if (!redis) return;
+
+  const key = `rate:${keySuffix}:${userId}`;
+
+  try {
+    const count = await redis.incr(key);
+
+    if (count === 1) {
+      await redis.expire(key, RATE_LIMIT_WINDOW);
+    }
+
+    if (count > RATE_LIMIT_MAX) {
+      throw new Error("Too many requests");
+    }
+  } catch (err) {
+    console.error("RATE LIMIT ERROR:", err);
+    // fail open
   }
 }
 
@@ -41,13 +69,13 @@ function encodeCursor(data: Cursor): string {
 }
 
 // =========================
-// Decode Cursor (HARDENED)
+// Decode Cursor
 // =========================
 function decodeCursor(cursor: string): Cursor {
   try {
     const raw = Buffer.from(cursor, "base64url").toString("utf-8");
 
-    if (raw.length > 500) throw new Error(); // prevent abuse
+    if (raw.length > 500) throw new Error();
 
     const parsed = JSON.parse(raw);
 
@@ -80,11 +108,22 @@ function decodeCursor(cursor: string): Cursor {
 }
 
 // =========================
-// Controller
+// 🚀 CONTROLLER
 // =========================
 export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
   try {
     const redis = await getRedisSafe();
+
+    // =========================
+    // AUTH (optional but recommended)
+    // =========================
+    const userId = req.user?.id ?? "anon";
+
+    // =========================
+    // RATE LIMIT (FIXED)
+    // =========================
+    await rateLimit(userId, "fetch_comments");
+
     const { cursor } = req.query;
 
     // =========================
@@ -122,7 +161,13 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     if (redis) {
       try {
         const cached = await redis.get(cacheKey);
-        if (cached) return res.json(JSON.parse(cached));
+        if (cached) {
+          try {
+            return res.json(JSON.parse(cached));
+          } catch {
+            // corrupted cache fallback
+          }
+        }
       } catch (err) {
         console.error("REDIS GET ERROR:", err);
       }
@@ -133,7 +178,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     // =========================
     const commentsQuery = decodedCursor
       ? sql`
-        SELECT *
+        SELECT id, created_at, content, user_id
         FROM comments
         WHERE post_id = ${postId}
           AND parent_id IS NULL
@@ -145,7 +190,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         LIMIT ${PAGE_SIZE + 1}
       `
       : sql`
-        SELECT *
+        SELECT id, created_at, content, user_id
         FROM comments
         WHERE post_id = ${postId}
           AND parent_id IS NULL
@@ -160,7 +205,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const comments = result.rows.slice(0, PAGE_SIZE) as Array<{
       id: string;
       created_at: Date;
-      [key: string]: any;
+      content: string;
+      user_id: string;
     }>;
 
     if (comments.length === 0) {
@@ -170,45 +216,57 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const ids = comments.map((c) => c.id);
 
     // =========================
-    // FETCH REPLIES (PRODUCTION GRADE)
+    // FETCH REPLIES (FIXED)
     // =========================
     const repliesResult = await db.execute(sql`
-      SELECT c.*, r.*
+      SELECT
+        c.id AS parent_id,
+        r.id AS reply_id,
+        r.created_at AS reply_created_at,
+        r.content AS reply_content,
+        r.user_id AS reply_user_id
       FROM comments c
       LEFT JOIN LATERAL (
-        SELECT *
+        SELECT id, created_at, content, user_id
         FROM comments r
         WHERE r.parent_id = c.id
         ORDER BY r.created_at ASC, r.id ASC
         LIMIT ${REPLIES_PAGE_SIZE + 1}
       ) r ON TRUE
-      WHERE c.id = ANY(${ids})
+      WHERE c.id IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`, `,
+      )})
     `);
 
     const replyMap = new Map<
       string,
       {
         replies: any[];
-        nextCursor: string | null;
         hasMore: boolean;
       }
     >();
 
     for (const row of repliesResult.rows as any[]) {
-      const parentId = row.id;
+      const parentId = row.parent_id;
 
       if (!replyMap.has(parentId)) {
         replyMap.set(parentId, {
           replies: [],
-          nextCursor: null,
           hasMore: false,
         });
       }
 
-      if (!row.r_id) continue;
+      if (!row.reply_id) continue;
 
       const data = replyMap.get(parentId)!;
-      data.replies.push(row);
+
+      data.replies.push({
+        id: row.reply_id,
+        created_at: row.reply_created_at,
+        content: row.reply_content,
+        user_id: row.reply_user_id,
+      });
 
       if (data.replies.length > REPLIES_PAGE_SIZE) {
         data.hasMore = true;
@@ -222,16 +280,18 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const enriched = comments.map((c) => {
       const r = replyMap.get(c.id);
 
+      const replies = r?.replies ?? [];
+
       return {
         ...c,
-        replies: r?.replies ?? [],
+        replies,
         repliesNextCursor:
-          r?.hasMore && r.replies.length > 0
+          r?.hasMore && replies.length > 0
             ? encodeCursor({
                 created_at: new Date(
-                  r.replies[r.replies.length - 1].created_at,
+                  replies[replies.length - 1].created_at,
                 ).toISOString(),
-                id: r.replies[r.replies.length - 1].id,
+                id: replies[replies.length - 1].id,
               })
             : null,
         repliesHasMore: r?.hasMore ?? false,
@@ -270,8 +330,15 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     }
 
     return res.json(response);
-  } catch (err) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "";
+
+    if (message.includes("Too many")) {
+      return res.status(429).json({ error: message });
+    }
+
     console.error("[comments] FETCH error:", err);
+
     return res.status(500).json({ error: "Fetch failed" });
   }
 };

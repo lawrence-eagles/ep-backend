@@ -9,7 +9,7 @@ const router = Router();
 
 router.use(authUser);
 
-router.get("/", fetchCommentsVersionOne);
+router.get("/:postId", fetchCommentsVersionOne);
 router.post("/:postId", createCommentVersionOne);
 router.put("/:id", updateCommentVersionOne);
 router.delete("/:id", deleteCommentVersionOne);

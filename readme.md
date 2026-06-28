@@ -15,7 +15,7 @@ npx drizzle-kit migrate
 
 <!-- redis initialization at line 69 check if this is too early and if this needs to use safe redis helper as seen below: -->
 
-above is my createCommentsController.ts code, review it and do the following:
+<!-- above is my createCommentsController.ts code, review it and do the following:
 
 1. check for bugs and fix all bugs
 
@@ -42,4 +42,4 @@ return null;
 6. Make sure there is no missing Slug Cache Invalidation. my create controller invalidates: post:${slug}:version
 
 Return a complete production ready createCommentsController.ts code. Do not omit or miss anything.
-Note I use node-redis.
+Note I use node-redis. -->

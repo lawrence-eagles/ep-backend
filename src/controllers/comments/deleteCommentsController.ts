@@ -31,20 +31,22 @@ async function rateLimit(userId: string, action: string): Promise<void> {
   if (!redis) return;
 
   const key = `rate:${action}:${userId}`;
+  let count: number;
 
   try {
-    const count = await redis.incr(key);
+    count = await redis.incr(key);
 
     if (count === 1) {
       await redis.expire(key, RATE_LIMIT_WINDOW);
     }
-
-    if (count > RATE_LIMIT_MAX) {
-      throw new Error("Too many requests");
-    }
   } catch (err) {
     console.error("RATE LIMIT ERROR:", err);
     // fail open
+    return;
+  }
+
+  if (count > RATE_LIMIT_MAX) {
+    throw new Error("Too many requests");
   }
 }
 
@@ -55,6 +57,7 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
   let postId: string | null = null;
   let slug: string | null = null;
   let categoryId: string | null = null;
+  let deletedCount = 0;
 
   try {
     // =========================
@@ -67,13 +70,11 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
     const userId = req.user.id;
 
     // =========================
-    // 2. PARAM NORMALIZATION
+    // 2. PARAM VALIDATION
     // =========================
     let { id } = req.params;
 
-    if (Array.isArray(id)) {
-      id = id[0];
-    }
+    if (Array.isArray(id)) id = id[0];
 
     if (!id || !UUID_RE.test(id)) {
       return res.status(400).json({ error: "Invalid comment id" });
@@ -88,8 +89,8 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
     // 4. TRANSACTION
     // =========================
     await db.transaction(async (tx) => {
-      // 🔍 Get comment + ownership
-      const commentResult = await tx.execute(sql`
+      // 🔍 Step 1: validate ownership + get post_id
+      const base = await tx.execute(sql`
         SELECT post_id
         FROM comments
         WHERE id = ${id}
@@ -97,61 +98,69 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
         LIMIT 1
       `);
 
-      if (commentResult.rows.length === 0) {
+      if (base.rows.length === 0) {
         return;
       }
 
-      const row = commentResult.rows[0] as { post_id: unknown };
-
-      if (typeof row.post_id !== "string") {
-        throw new Error("INVALID_POST_ID");
-      }
-
+      const row = base.rows[0] as { post_id: string };
       postId = row.post_id;
 
-      // 🔍 Get post
-      const postResult = await tx.execute(sql`
+      // 🔍 Step 2: get post metadata
+      const post = await tx.execute(sql`
         SELECT slug, category_id
         FROM posts
         WHERE id = ${postId}
         LIMIT 1
       `);
 
-      if (postResult.rows.length > 0) {
-        const postRow = postResult.rows[0] as {
-          slug: unknown;
-          category_id: unknown;
+      if (post.rows.length > 0) {
+        const p = post.rows[0] as {
+          slug: string;
+          category_id: string;
         };
 
-        if (typeof postRow.slug === "string") {
-          slug = postRow.slug;
-        }
-
-        if (typeof postRow.category_id === "string") {
-          categoryId = postRow.category_id;
-        }
+        slug = p.slug;
+        categoryId = p.category_id;
       }
 
-      // 🗑 Delete comment (cascade handles children)
-      await tx.execute(sql`
-        DELETE FROM comments WHERE id = ${id}
+      // 🔥 Step 3: delete subtree + count it
+      const result = await tx.execute(sql`
+        WITH RECURSIVE subtree AS (
+          SELECT id
+          FROM comments
+          WHERE id = ${id}
+
+          UNION ALL
+
+          SELECT c.id
+          FROM comments c
+          INNER JOIN subtree s ON c.parent_id = s.id
+        ),
+        deleted AS (
+          DELETE FROM comments
+          WHERE id IN (SELECT id FROM subtree)
+          RETURNING id
+        )
+        SELECT COUNT(*)::int AS count FROM deleted;
       `);
 
-      // 🔥 Update post counters if post exists
-      if (postId) {
+      deletedCount = Number((result.rows[0] as any)?.count ?? 0);
+
+      // 🔥 Step 4: update post counters
+      if (postId && deletedCount > 0) {
         await tx.execute(sql`
           UPDATE posts
-          SET score = GREATEST(score - 7, 0),
-              comments_count = GREATEST(comments_count - 1, 0)
+          SET score = GREATEST(score - ${7 * deletedCount}, 0),
+              comments_count = GREATEST(comments_count - ${deletedCount}, 0)
           WHERE id = ${postId}
         `);
       }
 
-      // 🔥 Update user behavior
-      if (categoryId) {
+      // 🔥 Step 5: update user behavior
+      if (categoryId && deletedCount > 0) {
         await tx.execute(sql`
           UPDATE user_behavior
-          SET score = GREATEST(score - 7, 0)
+          SET score = GREATEST(score - ${7 * deletedCount}, 0)
           WHERE user_id = ${userId}
             AND category_id = ${categoryId}
         `);
@@ -159,9 +168,9 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
     });
 
     // =========================
-    // 5. NOT FOUND CASE
+    // 5. NOT FOUND / NO-OP
     // =========================
-    if (!postId) {
+    if (!postId || deletedCount === 0) {
       return res.json({ success: true, deleted: false });
     }
 
@@ -175,7 +184,7 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
         const multi = redis.multi();
 
         multi.incr(`comments:${postId}:version`);
-        multi.incr(`feed:${userId}:version`);
+        multi.incr(`feed:${req.user.id}:version`);
         multi.incr(`feed:trending:version`);
 
         if (slug) {
@@ -191,7 +200,11 @@ export const deleteCommentVersionOne = async (req: Request, res: Response) => {
     // =========================
     // 7. RESPONSE
     // =========================
-    return res.json({ success: true, deleted: true });
+    return res.json({
+      success: true,
+      deleted: true,
+      deletedCount,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "";
 
