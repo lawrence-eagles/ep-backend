@@ -14,12 +14,24 @@ export const FEEDS = [
     url: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
   },
   { name: "Guardian", url: "https://www.theguardian.com/world/rss" },
-  { name: "Punch", url: "https://punchng.com/feed/" },
+  { name: "Punch", url: "https://rss.punchng.com/v1/category/latest_news" },
   { name: "Vanguard", url: "https://www.vanguardngr.com/feed/" },
   { name: "Channels", url: "https://www.channelstv.com/feed/" },
   { name: "Arise", url: "https://www.arise.tv/feed/" },
   { name: "TechCabal", url: "https://techcabal.com/feed/" },
-  { name: "Bloomberg", url: "https://feeds.bloomberg.com/markets/news.rss" },
+  {
+    name: "Sahara Reporters",
+    url: "https://saharareporters.com/articles/rss-feed",
+  },
+  { name: "Premium Times", url: "https://www.premiumtimesng.com/feed" },
+  { name: "ThisDay Live", url: "https://www.thisdaylive.com/feed/" },
+  { name: "Daily Post", url: "https://dailypost.ng/feed/" },
+  { name: "Mayo Clinic News", url: "https://newsnetwork.mayoclinic.org/feed/" },
+  {
+    name: "ScienceDaily Health",
+    url: "https://www.sciencedaily.com/rss/health_medicine.xml",
+  },
+  { name: "Men's Health", url: "https://www.menshealth.com/rss/all.xml" },
 ] as const;
 
 export type FeedConfig = (typeof FEEDS)[number];
