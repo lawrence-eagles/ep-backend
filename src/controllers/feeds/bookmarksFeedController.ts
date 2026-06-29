@@ -135,6 +135,10 @@ export const bookmarksFeedVersionOne = async (req: Request, res: Response) => {
               throw new Error("Invalid cache shape");
             }
 
+            if ("nextCursor" in parsed && parsed.nextCursor !== null) {
+              decodeCursor(parsed.nextCursor);
+            }
+
             return res.json(parsed);
           } catch (err) {
             console.warn("Corrupted cache:", cacheKey);

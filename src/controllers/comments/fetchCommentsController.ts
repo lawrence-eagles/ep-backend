@@ -179,6 +179,17 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
               throw new Error("Invalid cache shape");
             }
 
+            if (
+              (parsed as any).hasMore &&
+              (parsed as any).nextCursor === null
+            ) {
+              throw new Error("Invalid cache shape");
+            }
+
+            if ((parsed as any).nextCursor !== null) {
+              decodeCursor((parsed as any).nextCursor);
+            }
+
             return res.json(parsed);
           } catch (err) {
             console.warn("Corrupted cache:", cacheKey);

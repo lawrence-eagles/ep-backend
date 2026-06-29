@@ -163,11 +163,23 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
               !parsed ||
               typeof parsed !== "object" ||
               !Array.isArray((parsed as any).items) ||
-              !("nextCursor" in parsed)
+              !(parsed as any).items.every(
+                (item: any) =>
+                  item &&
+                  typeof item === "object" &&
+                  typeof item.id === "string" &&
+                  typeof item.createdAt === "string",
+              ) ||
+              !("nextCursor" in parsed) ||
+              ((parsed as any).nextCursor !== null &&
+                typeof (parsed as any).nextCursor !== "string")
             ) {
               throw new Error("Invalid cache shape");
             }
 
+            if ((parsed as any).nextCursor !== null) {
+              decodeCursor((parsed as any).nextCursor);
+            }
             return res.json(parsed);
           } catch (err) {
             console.warn("Corrupted cache:", cacheKey);
