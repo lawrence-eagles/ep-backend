@@ -1,10 +1,42 @@
 import { db } from "../db";
-import { sources, type Source, NewSource } from "../db/schema";
+import {
+  sources,
+  feedAliases,
+  type Source,
+  type NewSource,
+} from "../db/schema";
 import { eq } from "drizzle-orm";
 
-// ── Feed registry — single source of truth ────────────────────────────────────
-// Use HTTPS feed URLs to prevent in-transit tampering. MAKE SURE TO USE HTTPS
-// Keeping registry entries on HTTP weakens ingestion integrity and can let upstream content be modified on the network path.
+// ─────────────────────────────────────────────
+// 🔥 URL NORMALIZATION (CANONICAL + DETERMINISTIC)
+// ─────────────────────────────────────────────
+
+export function normalizeFeedUrl(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+
+    // enforce https
+    u.protocol = "https:";
+
+    // normalize pathname
+    u.pathname = u.pathname
+      .replace(/\/+$/, "") // remove trailing slashes
+      .replace(/\/(feed|rss)\/?$/i, ""); // safe suffix strip
+
+    // remove noise
+    u.search = "";
+    u.hash = "";
+
+    return u.toString();
+  } catch {
+    return raw.trim();
+  }
+}
+
+// ─────────────────────────────────────────────
+// 🔥 FEED REGISTRY (DO NOT CHANGE LIGHTLY)
+// ─────────────────────────────────────────────
+
 export const FEEDS = [
   { name: "CNN", url: "http://rss.cnn.com/rss/edition.rss" },
   { name: "BBC", url: "http://feeds.bbci.co.uk/news/rss.xml" },
@@ -26,7 +58,6 @@ export const FEEDS = [
   { name: "Premium Times", url: "https://www.premiumtimesng.com/feed" },
   { name: "ThisDay Live", url: "https://www.thisdaylive.com/feed/" },
   { name: "Daily Post", url: "https://dailypost.ng/feed/" },
-  { name: "Mayo Clinic News", url: "https://newsnetwork.mayoclinic.org/feed/" },
   {
     name: "ScienceDaily Health",
     url: "https://www.sciencedaily.com/rss/health_medicine.xml",
@@ -36,66 +67,96 @@ export const FEEDS = [
 
 export type FeedConfig = (typeof FEEDS)[number];
 
-// O(1) lookup map — built once at module load
-const FEED_MAP = new Map<string, FeedConfig>(FEEDS.map((f) => [f.url, f]));
+// ─────────────────────────────────────────────
+// 🔥 NORMALIZED FEED MAP (KEY FIX)
+// ─────────────────────────────────────────────
+
+const FEED_MAP: Map<string, FeedConfig> = new Map(
+  FEEDS.map((f) => [normalizeFeedUrl(f.url), f]),
+);
 
 export function getFeedConfig(url: string): FeedConfig | undefined {
-  return FEED_MAP.get(url);
+  const normalized = normalizeFeedUrl(url);
+  return FEED_MAP.get(normalized);
 }
 
-// ── Get or create source ──────────────────────────────────────────────────────
-//
-// Uses fetch → insert (onConflictDoNothing) → re-fetch pattern to handle
-// concurrent Inngest function executions safely without throwing on
-// duplicate key violations.
+// ─────────────────────────────────────────────
+// 🔥 RESOLVE SOURCE (ALIAS + CANONICAL)
+// ─────────────────────────────────────────────
 
-export async function getOrCreateSource(feedUrl: string): Promise<Source> {
-  const feedConfig = getFeedConfig(feedUrl);
+async function resolveSourceByUrl(
+  normalizedUrl: string,
+): Promise<Source | null> {
+  // 1. Alias lookup
+  const aliasResult = await db
+    .select({ source: sources })
+    .from(feedAliases)
+    .innerJoin(sources, eq(feedAliases.sourceId, sources.id))
+    .where(eq(feedAliases.aliasUrl, normalizedUrl))
+    .limit(1);
 
-  if (!feedConfig) {
-    throw new Error(
-      `Feed URL not registered in FEEDS registry: ${feedUrl}. ` +
-        `Add it to the FEEDS array in source.ts before using it.`,
-    );
+  if (aliasResult.length > 0) {
+    return aliasResult[0].source;
   }
 
-  const { url, name } = feedConfig;
-  // do not use NewSource type for select and for return vaues of your function.
-  const newSource: NewSource = {
-    name,
-    url,
-  };
-
-  // 1. Fast path — source almost always exists after first run
+  // 2. Canonical lookup
   const [existing] = await db
     .select()
     .from(sources)
-    .where(eq(sources.url, url))
+    .where(eq(sources.url, normalizedUrl))
     .limit(1);
 
-  if (existing) return existing;
+  return existing ?? null;
+}
 
-  // 2. Attempt insert — skips silently on duplicate (race-safe)
+// ─────────────────────────────────────────────
+// 🚀 MAIN: getOrCreateSource (PRODUCTION SAFE)
+// ─────────────────────────────────────────────
+
+export async function getOrCreateSource(feedUrl: string): Promise<Source> {
+  const normalizedInput = normalizeFeedUrl(feedUrl);
+
+  const feedConfig = getFeedConfig(normalizedInput);
+
+  if (!feedConfig) {
+    throw new Error(`Feed URL not registered: ${feedUrl}. Add to FEEDS first.`);
+  }
+
+  // canonical identity comes from registry
+  const canonicalUrl = normalizeFeedUrl(feedConfig.url);
+
+  // 1. Resolve existing
+  const resolved = await resolveSourceByUrl(canonicalUrl);
+  if (resolved) return resolved;
+
+  const newSource: NewSource = {
+    name: feedConfig.name,
+    url: canonicalUrl,
+  };
+
+  // 2. Insert (race-safe)
   const [inserted] = await db
     .insert(sources)
     .values(newSource)
     .onConflictDoNothing()
     .returning();
 
-  if (inserted) return inserted;
+  if (inserted) {
+    // self-alias ensures future matches
+    await db
+      .insert(feedAliases)
+      .values({
+        aliasUrl: canonicalUrl,
+        sourceId: inserted.id,
+      })
+      .onConflictDoNothing();
 
-  // 3. Concurrent request won the insert race — re-fetch
-  const [retry] = await db
-    .select()
-    .from(sources)
-    .where(eq(sources.url, url))
-    .limit(1);
+    return inserted;
+  }
 
+  // 3. Race fallback
+  const retry = await resolveSourceByUrl(canonicalUrl);
   if (retry) return retry;
 
-  // 4. Unreachable — indicates missing UNIQUE constraint on sources.url
-  throw new Error(
-    `Failed to get or create source for "${name}" (${url}). ` +
-      `Check that sources.url has a UNIQUE constraint in your Drizzle schema.`,
-  );
+  throw new Error(`Failed to get or create source for "${feedConfig.name}"`);
 }
