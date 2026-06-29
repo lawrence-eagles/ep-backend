@@ -164,9 +164,30 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         const cached = await redis.get(cacheKey);
         if (cached) {
           try {
-            return res.json(JSON.parse(cached));
-          } catch {
-            // corrupted cache fallback
+            const parsed = JSON.parse(cached);
+
+            // 🔥 STRICT SHAPE VALIDATION
+            if (
+              !parsed ||
+              typeof parsed !== "object" ||
+              !Array.isArray((parsed as any).comments) ||
+              typeof (parsed as any).hasMore !== "boolean" ||
+              ("nextCursor" in parsed &&
+                parsed.nextCursor !== null &&
+                typeof parsed.nextCursor !== "string")
+            ) {
+              throw new Error("Invalid cache shape");
+            }
+
+            return res.json(parsed);
+          } catch (err) {
+            console.warn("Corrupted cache:", cacheKey);
+
+            try {
+              await redis.del(cacheKey);
+            } catch (delErr) {
+              console.error("REDIS DEL ERROR:", delErr);
+            }
           }
         }
       } catch (err) {
