@@ -156,7 +156,40 @@ export const trendingFeedVersionOne = async (req: Request, res: Response) => {
       try {
         const cached = await redis.get(cacheKey);
         if (cached) {
-          return res.json(JSON.parse(cached));
+          try {
+            const parsed = JSON.parse(cached);
+
+            if (
+              !parsed ||
+              typeof parsed !== "object" ||
+              !Array.isArray((parsed as any).items) ||
+              !(parsed as any).items.every(
+                (item: any) =>
+                  item &&
+                  typeof item === "object" &&
+                  typeof item.id === "string" &&
+                  typeof item.createdAt === "string",
+              ) ||
+              !("nextCursor" in parsed) ||
+              ((parsed as any).nextCursor !== null &&
+                typeof (parsed as any).nextCursor !== "string")
+            ) {
+              throw new Error("Invalid cache shape");
+            }
+
+            if ((parsed as any).nextCursor !== null) {
+              decodeCursor((parsed as any).nextCursor);
+            }
+            return res.json(parsed);
+          } catch (err) {
+            console.warn("Corrupted cache:", cacheKey);
+
+            try {
+              await redis.del(cacheKey);
+            } catch (delErr) {
+              console.error("REDIS DEL ERROR:", delErr);
+            }
+          }
         }
       } catch (err) {
         console.error("REDIS GET ERROR:", err);

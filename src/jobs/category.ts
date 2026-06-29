@@ -65,6 +65,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
     "sanctions",
   ],
   Crypto: ["bitcoin", "ethereum"],
+  Sport: ["word cup", "champions league"],
 };
 
 // ── Slugify ───────────────────────────────────────────────────────────────────

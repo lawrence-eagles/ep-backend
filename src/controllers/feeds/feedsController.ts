@@ -139,7 +139,40 @@ export const forYouFeedVerisonOne = async (req: Request, res: Response) => {
 
         const cached = await redis.get(cacheKey);
         if (cached) {
-          return res.json(JSON.parse(cached));
+          try {
+            const parsed = JSON.parse(cached);
+
+            if (
+              !parsed ||
+              typeof parsed !== "object" ||
+              !Array.isArray(parsed.items) ||
+              !parsed.items.every(
+                (item: any) =>
+                  item &&
+                  typeof item === "object" &&
+                  typeof item.id === "string" &&
+                  typeof item.createdAt === "string",
+              ) ||
+              ("nextCursor" in parsed &&
+                parsed.nextCursor !== null &&
+                typeof parsed.nextCursor !== "string")
+            ) {
+              throw new Error("Invalid cache shape");
+            }
+
+            if ("nextCursor" in parsed && parsed.nextCursor !== null) {
+              decodeCursor(parsed.nextCursor);
+            }
+            return res.json(parsed);
+          } catch (err) {
+            console.warn("Corrupted cache:", cacheKey);
+
+            try {
+              await redis.del(cacheKey);
+            } catch (delErr) {
+              console.error("REDIS DEL ERROR:", delErr);
+            }
+          }
         }
       } catch (err) {
         console.error("REDIS READ ERROR:", err);

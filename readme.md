@@ -9,6 +9,11 @@
 7. Implement the next 5 routes
 8. Update category keywords
 9. Update RSS feeds
+10. Add route that allows users to share (recommend) app
+11. Add route that allows users to rate app
+12. Add push notification for mobile
+13. Think of adding jobs to your categories
+14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -43,3 +48,9 @@ return null;
 
 Return a complete production ready createCommentsController.ts code. Do not omit or miss anything.
 Note I use node-redis. -->
+
+<!--
+// old validation
+if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid cache shape");
+} -->
