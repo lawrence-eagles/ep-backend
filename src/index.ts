@@ -33,8 +33,8 @@ app.use(
 // REQUIRED for better auth integration must be before express.json().
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
-app.use(express.json());
 app.use(cookieParser());
+app.use(express.json());
 
 // 👇 REQUIRED endpoint for Inngest
 app.use("/api/inngest", inngestHandler);
