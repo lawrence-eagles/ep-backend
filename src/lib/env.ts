@@ -19,6 +19,7 @@ const envSchema = z.object({
   FACEBOOK_CLIENT_SECRET: z.string().min(1),
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
+  CRON_SECRET: z.string().min(1),
   //   CLERK_PUBLISHABLE_KEY: z.string().min(1),
   //   CLERK_WEBHOOK_SECRET: z.string().optional(),
   //   POLAR_ACCESS_TOKEN: z.string().optional(),
