@@ -41,7 +41,10 @@ export const shareAppsRedirectControllerVersionOne = async (
   try {
     // ✅ 1. Validate shareId EARLY
     const shareId = req.params.id;
-    if (!shareId || typeof shareId !== "string") {
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    if (!shareId || typeof shareId !== "string" || !uuidPattern.test(shareId)) {
       return res.redirect(`${env.FRONTEND_URL}/notfound`);
     }
 
@@ -119,7 +122,6 @@ export const shareAppsRedirectControllerVersionOne = async (
       secure: env.NODE_ENV === "production",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
-    ``;
 
     // ─────────────────────────────────────────
     // 🔁 FINAL REDIRECT

@@ -16,6 +16,36 @@ async function getRedisSafe() {
 }
 
 // ─────────────────────────────────────────────
+// 🔒 DISTRIBUTED LOCK
+// ─────────────────────────────────────────────
+const LOCK_KEY = "lock:flushShares";
+const LOCK_TTL = 60; // seconds
+
+async function acquireLock(redis: any): Promise<string | null> {
+  const token = Math.random().toString(36).slice(2);
+
+  const result = await redis.set(LOCK_KEY, token, {
+    NX: true,
+    EX: LOCK_TTL,
+  });
+
+  if (result !== "OK") return null;
+
+  return token;
+}
+
+async function releaseLock(redis: any, token: string) {
+  try {
+    const current = await redis.get(LOCK_KEY);
+    if (current === token) {
+      await redis.del(LOCK_KEY);
+    }
+  } catch (err) {
+    console.error("Failed to release lock:", err);
+  }
+}
+
+// ─────────────────────────────────────────────
 // 🔁 FLUSH SHARES (PRODUCTION SAFE)
 // ─────────────────────────────────────────────
 export async function flushShares(): Promise<void> {
@@ -28,17 +58,22 @@ export async function flushShares(): Promise<void> {
     return;
   }
 
+  // 🔒 Acquire lock (prevents overlapping jobs)
+  const lockToken = await acquireLock(redis);
+
+  if (!lockToken) {
+    console.warn("⚠️ Another flush job is already running — skipping");
+    return;
+  }
+
   try {
-    // 🔥 Use SCAN instead of KEYS (non-blocking)
     const iterator = redis.scanIterator({
       MATCH: "share:*:clicks",
       COUNT: 100,
     });
 
-    // ✅ FIX: Explicitly type iterator values
     for await (const key of iterator as AsyncIterable<string>) {
       try {
-        // Expected format: share:{shareId}:clicks
         const parts = key.split(":");
 
         if (parts.length !== 3) {
@@ -53,20 +88,26 @@ export async function flushShares(): Promise<void> {
           continue;
         }
 
-        // 🔥 ATOMIC READ + DELETE (prevents race condition)
-        const countStr = await redis.get(key);
+        // 🔥 ATOMIC READ + DELETE (FIXES RACE CONDITION)
+        const countStr = await redis.sendCommand(["GETDEL", key]);
+
         if (!countStr) continue;
+
         const count = Number(countStr);
+
         if (!Number.isFinite(count) || count <= 0) {
           console.warn("Invalid count value:", key, countStr);
           continue;
         }
-        // 🔥 Persist aggregated clicks
+
+        // 🔥 Persist safely
         await db
           .update(shareApps)
-          .set({ clicks: sql`${shareApps.clicks} + ${count}` })
+          .set({
+            clicks: sql`${shareApps.clicks} + ${count}`,
+          })
           .where(eq(shareApps.id, shareId));
-        await redis.decrBy(key, count).catch(() => redis.del(key));
+
         console.log(`✅ Flushed ${shareId}: ${count}`);
       } catch (err) {
         console.error("❌ Flush failed for key:", key, err);
@@ -76,5 +117,8 @@ export async function flushShares(): Promise<void> {
     console.log("🎉 Flush complete");
   } catch (err) {
     console.error("❌ Flush job failed:", err);
+  } finally {
+    // 🔓 Always release lock
+    await releaseLock(redis, lockToken);
   }
 }

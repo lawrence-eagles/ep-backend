@@ -47,7 +47,8 @@ export function hashIP(ip: string): string {
  * 🤖 Bot detection (production hardened)
  */
 export function isBot(userAgent?: string): boolean {
-  if (!userAgent) return false;
+  // Missing/empty UA is highly indicative of automated traffic.
+  if (!userAgent) return true;
 
   const ua = userAgent.toLowerCase();
 

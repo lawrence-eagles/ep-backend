@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { toNodeHandler } from "better-auth/node";
 import { inngestHandler } from "./inngest/route";
 import { getEnv } from "./lib/env";
@@ -33,6 +34,7 @@ app.use(
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use(express.json());
+app.use(cookieParser());
 
 // 👇 REQUIRED endpoint for Inngest
 app.use("/api/inngest", inngestHandler);
