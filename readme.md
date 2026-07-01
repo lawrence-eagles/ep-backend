@@ -57,7 +57,7 @@ Note I use node-redis. -->
 How to use the cron route
 1. DEPLOY YOUR APP Make sure your app is live: https://your-app.up.railway.app
 2. CREATE RAILWAY CRON JOB
-    🔧 In Railway Dashboard:
+    🔧 In Railway Dashboard:xx  x
     Go to your project
     Click “+ New”
     Select “Cron Job”
@@ -95,4 +95,8 @@ Set cookie (sid)
 Redirect
 ↓
 FRONTEND PAGE (/downloads or app)
+
+Generationg keys with node:
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
 -->

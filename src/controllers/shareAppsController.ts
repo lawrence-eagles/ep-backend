@@ -1,6 +1,9 @@
 import { db } from "../db";
 import { shareApps } from "../db/schema";
 import type { Request, Response } from "express";
+import { getEnv } from "../lib/env";
+
+const env = getEnv();
 
 export const shareAppsControllerVersionOne = async (
   req: Request,
@@ -17,6 +20,10 @@ export const shareAppsControllerVersionOne = async (
 
   const { postId, channel } = req.body;
 
+  if (!postId || !channel) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
   const [share] = await db
     .insert(shareApps)
     .values({
@@ -27,7 +34,7 @@ export const shareAppsControllerVersionOne = async (
     .returning();
 
   return res.json({
-    url: `https://backendurl.com/s/${share.id}`,
+    url: `${env.BACKEND_URL}/s/${share.id}`,
     shareId: share.id,
   });
 };

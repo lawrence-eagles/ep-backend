@@ -54,36 +54,19 @@ export async function flushShares(): Promise<void> {
         }
 
         // 🔥 ATOMIC READ + DELETE (prevents race condition)
-        let countStr: string | null = null;
-
-        try {
-          // node-redis supports GETDEL
-          countStr = await redis.getDel(key);
-        } catch {
-          // fallback if GETDEL not available
-          countStr = await redis.get(key);
-          if (countStr) {
-            await redis.del(key);
-          }
-        }
-
+        const countStr = await redis.get(key);
         if (!countStr) continue;
-
         const count = Number(countStr);
-
         if (!Number.isFinite(count) || count <= 0) {
           console.warn("Invalid count value:", key, countStr);
           continue;
         }
-
         // 🔥 Persist aggregated clicks
         await db
           .update(shareApps)
-          .set({
-            clicks: sql`${shareApps.clicks} + ${count}`,
-          })
+          .set({ clicks: sql`${shareApps.clicks} + ${count}` })
           .where(eq(shareApps.id, shareId));
-
+        await redis.decrBy(key, count).catch(() => redis.del(key));
         console.log(`✅ Flushed ${shareId}: ${count}`);
       } catch (err) {
         console.error("❌ Flush failed for key:", key, err);

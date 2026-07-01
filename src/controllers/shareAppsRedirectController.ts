@@ -39,27 +39,30 @@ export const shareAppsRedirectControllerVersionOne = async (
   res: Response,
 ) => {
   try {
-    // ✅ 1. Validate shareId EARLY (no Redis yet)
+    // ✅ 1. Validate shareId EARLY
     const shareId = req.params.id;
     if (!shareId || typeof shareId !== "string") {
-      return res.redirect("https://eaglespress.com/notfound");
+      return res.redirect(`${env.FRONTEND_URL}/notfound`);
     }
 
     // ✅ 2. Normalize UA
     const userAgent = normalizeUserAgent(req.headers["user-agent"]);
 
-    // 🔥 3. BOT / FRAUD FILTER (cheap checks first)
-    if (req.ip === "known-bot")
-      return res.redirect("https://eaglespress.com/notfound");
-    if (isBot(userAgent))
-      return res.redirect("https://eaglespress.com/notfound");
+    // 🔥 3. BOT / FRAUD FILTER
+    if (req.ip === "known-bot") {
+      return res.redirect(`${env.FRONTEND_URL}/notfound`);
+    }
 
-    // ✅ 4. Resolve IP safely
+    if (isBot(userAgent)) {
+      return res.redirect(`${env.FRONTEND_URL}/notfound`);
+    }
+
+    // ✅ 4. Resolve IP
     const ip = req.ip || "0.0.0.0";
     const ipHash = hashIP(ip);
 
     // ─────────────────────────────────────────
-    // 🔥 REDIS (LAZY + OPTIONAL)
+    // 🔥 REDIS (ATOMIC DEDUPE)
     // ─────────────────────────────────────────
     const redis = await getRedisSafe();
 
@@ -69,12 +72,20 @@ export const shareAppsRedirectControllerVersionOne = async (
       try {
         const dedupeKey = `click:${shareId}:${ipHash}`;
 
-        const exists = await redis.get(dedupeKey);
+        /**
+         * 🔥 ATOMIC OPERATION
+         * SET NX ensures only one request wins
+         */
+        const result = await redis.set(dedupeKey, "1", {
+          NX: true,
+          EX: 600, // 10 min dedupe window
+        });
 
-        if (!exists) {
-          await redis.set(dedupeKey, "1", { EX: 600 });
+        if (result === "OK") {
+          // ✅ Only first request increments
           await redis.incr(`share:${shareId}:clicks`);
         } else {
+          // ❌ Duplicate request
           shouldCountClick = false;
         }
       } catch (err) {
@@ -103,19 +114,21 @@ export const shareAppsRedirectControllerVersionOne = async (
     // ─────────────────────────────────────────
     res.cookie("sid", shareId, {
       httpOnly: true,
+      path: "/",
       sameSite: "lax",
       secure: env.NODE_ENV === "production",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+    ``;
 
     // ─────────────────────────────────────────
     // 🔁 FINAL REDIRECT
     // ─────────────────────────────────────────
-    return res.redirect("https://eaglespress.com/downloads");
+    return res.redirect(`${env.FRONTEND_URL}/downloads`);
   } catch (error) {
     console.error("Redirect controller error:", error);
 
-    // 🔥 NEVER FAIL USER FLOW
-    return res.redirect("https://eaglespress.com/downloads");
+    // 🔥 FAIL SAFE
+    return res.redirect(`${env.FRONTEND_URL}/downloads`);
   }
 };
