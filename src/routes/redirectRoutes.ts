@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { shareAppsRedirectControllerVersionOne } from "../controllers/shareAppsRedirectController";
 
-const router = Router();
+const router = Router({ mergeParams: true });
 
 router.get("/", shareAppsRedirectControllerVersionOne);
 
