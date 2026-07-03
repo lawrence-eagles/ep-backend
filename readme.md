@@ -14,6 +14,8 @@
 12. Add push notification for mobile
 13. Think of adding jobs to your categories
 14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
+15. Implement email marketing -- study and learn how to do it.
+16. Implement WhatsApp marketing. This is how it would work in a way that would enable users share app and/or posts to all their WhatsApp contacts. Or some platform that gets all users WhatsApp contacts/username like email lists and send them messages like email marketing but this is whats app. Do the same for twitter, instagram, facebook and tiktok.
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -73,7 +75,7 @@ How to use the cron route
 Note the backslashes in the cron should not be there they are added by markdown
 
 // Share app flow
-https://eaglespress.com/s/UUID
+https://eaglespressbackend.com/s/UUID
 ↓
 Hits Express backend
 ↓

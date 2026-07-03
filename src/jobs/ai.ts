@@ -121,7 +121,7 @@ The array must have exactly ${contents.length} objects in this exact shape:
             Authorization: `Bearer ${env.OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: "gpt-4o-mini",
+            model: "gpt-4o-mini", // note there is also gpt-5-mini
             temperature: 0.3,
             // ~80 tokens per summary; minimum 512 to avoid truncation on small batches
             max_tokens: Math.max(contents.length * 80, 512),

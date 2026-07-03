@@ -1,8 +1,9 @@
-import { db } from "../db";
-import { shareClicks } from "../db/schema";
+import { eq } from "drizzle-orm";
+import { shareApps, shareClicks } from "../db/schema";
 import type { Request, Response } from "express";
 import { getRedis } from "../lib/redis";
 import { hashIP, isBot } from "../utils/security";
+import { db } from "../db";
 import { getEnv } from "../lib/env";
 
 const env = getEnv();
@@ -45,6 +46,16 @@ export const shareAppsRedirectControllerVersionOne = async (
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
     if (!shareId || typeof shareId !== "string" || !uuidPattern.test(shareId)) {
+      return res.redirect(`${env.FRONTEND_URL}/notfound`);
+    }
+
+    const [share] = await db
+      .select({ id: shareApps.id })
+      .from(shareApps)
+      .where(eq(shareApps.id, shareId))
+      .limit(1);
+
+    if (!share) {
       return res.redirect(`${env.FRONTEND_URL}/notfound`);
     }
 

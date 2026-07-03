@@ -3,6 +3,6 @@ import { shareAppsRedirectControllerVersionOne } from "../controllers/shareAppsR
 
 const router = Router();
 
-router.get("/s/:id", shareAppsRedirectControllerVersionOne);
+router.get("/", shareAppsRedirectControllerVersionOne);
 
 export default router;
