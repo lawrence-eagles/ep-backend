@@ -29,6 +29,10 @@ app.use(
   }),
 );
 
+// Enable trust proxy
+app.set("trust proxy", true);
+app.use(cookieParser());
+
 // Note must send cookies from frontend as seen below
 // await fetch("https://api.yoursite.com", {
 //   credentials: "include",
@@ -36,8 +40,6 @@ app.use(
 
 // REQUIRED for better auth integration must be before express.json().
 app.all("/api/auth/*splat", toNodeHandler(auth));
-
-app.use(cookieParser());
 app.use(express.json());
 
 // 👇 REQUIRED endpoint for Inngest

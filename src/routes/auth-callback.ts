@@ -35,6 +35,21 @@ async function trackConversionSafe(
   }
 }
 
+function getCookieOptions(req: Request) {
+  const proto = req.headers["x-forwarded-proto"];
+
+  const isHttps =
+    req.secure ||
+    (typeof proto === "string" && proto.split(",")[0].trim() === "https");
+
+  return {
+    httpOnly: true,
+    path: "/",
+    sameSite: isHttps ? "none" : "lax",
+    secure: isHttps,
+  } as const;
+}
+
 /**
  * 🔥 AUTH CALLBACK
  * Handles:
@@ -59,11 +74,19 @@ router.post("/", authUser, async (req: Request, res: Response) => {
     // =========================
     // 2. GET SHARE ID FROM COOKIE
     // =========================
-    const shareId = req.cookies?.sid as string | undefined;
+    // ✅ Validate shareId (CRITICAL FIX)
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    if (!shareId) {
+    const rawShareId =
+      req.cookies?.sid ||
+      (typeof req.query.sid === "string" ? req.query.sid : undefined);
+
+    if (!rawShareId || !uuidPattern.test(rawShareId)) {
       return res.json({ success: true, tracked: false });
     }
+
+    const shareId = rawShareId;
 
     // =========================
     // 3. DETERMINE CONVERSION TYPE
@@ -82,12 +105,7 @@ router.post("/", authUser, async (req: Request, res: Response) => {
     // 5. CLEAR COOKIE ONLY IF SUCCESS
     // =========================
     if (tracked) {
-      res.clearCookie("sid", {
-        httpOnly: true,
-        path: "/",
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-      });
+      res.clearCookie("sid", getCookieOptions(req));
     }
 
     // =========================

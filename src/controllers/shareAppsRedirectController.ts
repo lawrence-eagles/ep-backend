@@ -32,6 +32,21 @@ function normalizeUserAgent(
   return undefined;
 }
 
+function getCookieOptions(req: Request) {
+  const proto = req.headers["x-forwarded-proto"];
+
+  const isHttps =
+    req.secure ||
+    (typeof proto === "string" && proto.split(",")[0].trim() === "https");
+
+  return {
+    httpOnly: true,
+    path: "/",
+    sameSite: isHttps ? "none" : "lax",
+    secure: isHttps,
+  } as const;
+}
+
 // ─────────────────────────────────────────────
 // 🚀 CONTROLLER (PRODUCTION HARDENED)
 // ─────────────────────────────────────────────
@@ -43,7 +58,7 @@ export const shareAppsRedirectControllerVersionOne = async (
     // ✅ 1. Validate shareId EARLY
     const shareId = req.params.id;
     const uuidPattern =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
     if (!shareId || typeof shareId !== "string" || !uuidPattern.test(shareId)) {
       return res.redirect(`${env.FRONTEND_URL}/notfound`);
@@ -127,10 +142,7 @@ export const shareAppsRedirectControllerVersionOne = async (
     // 🍪 ATTRIBUTION COOKIE
     // ─────────────────────────────────────────
     res.cookie("sid", shareId, {
-      httpOnly: true,
-      path: "/",
-      sameSite: env.NODE_ENV === "production" ? "none" : "lax",
-      secure: env.NODE_ENV === "production",
+      ...getCookieOptions(req),
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
