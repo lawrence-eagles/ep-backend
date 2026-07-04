@@ -78,15 +78,11 @@ router.post("/", authUser, async (req: Request, res: Response) => {
     const uuidPattern =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    const rawShareId =
-      req.cookies?.sid ||
-      (typeof req.query.sid === "string" ? req.query.sid : undefined);
+    const shareId = req.cookies?.sid;
 
-    if (!rawShareId || !uuidPattern.test(rawShareId)) {
+    if (!shareId || !uuidPattern.test(shareId)) {
       return res.json({ success: true, tracked: false });
     }
-
-    const shareId = rawShareId;
 
     // =========================
     // 3. DETERMINE CONVERSION TYPE
