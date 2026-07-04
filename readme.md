@@ -22,10 +22,6 @@ npx drizzle-kit migrate
 
 <!-- redis initialization at line 69 check if this is too early and if this needs to use safe redis helper as seen below: -->
 
-<!-- 1. the redis initialization is in line 28 check if this is too early and if this needs to use safe redis helper as seen below:
-
-implement the necessary update and return a complete production ready shareAppsRedirectController.ts code. Do not omit or miss anything. -->
-
 <!-- above is my createCommentsController.ts code, review it and do the following:
 
 1. check for bugs and fix all bugs
