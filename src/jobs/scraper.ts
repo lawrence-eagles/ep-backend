@@ -64,7 +64,15 @@ export async function scrapeArticle(url: string): Promise<ScrapeResult> {
 
       if (cached) {
         try {
-          return JSON.parse(cached) as ScrapeResult;
+          const parsed = JSON.parse(cached);
+          if (
+            parsed &&
+            (typeof parsed.content === "string" || parsed.content === null) &&
+            (typeof parsed.imageUrl === "string" || parsed.imageUrl === null)
+          ) {
+            return parsed as ScrapeResult;
+          }
+          console.warn("[scraper] Corrupt cache shape, ignoring:", url);
         } catch {
           console.warn("[scraper] Corrupt cache, ignoring:", url);
         }
