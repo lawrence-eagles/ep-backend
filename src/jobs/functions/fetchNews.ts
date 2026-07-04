@@ -2,19 +2,19 @@ import Parser from "rss-parser";
 import pLimit from "p-limit";
 import { z } from "zod";
 import { inArray } from "drizzle-orm";
-import { inngest } from "../lib/inngest";
-import { db } from "../db";
-import { posts } from "../db/schema";
-import { getRedis } from "../lib/redis";
+import { inngest } from "../../lib/inngest";
+import { db } from "../../db";
+import { posts } from "../../db/schema";
+import { getRedis } from "../../lib/redis";
 import type { InngestFunction } from "inngest";
-import { FEEDS, getOrCreateSource } from "./source";
-import { scrapeArticle } from "./scraper";
-import { batchSummarize } from "./ai";
-import { insertPostWithUniqueSlug } from "../utils/slug";
-import { detectCategoryId } from "./category";
-import { calculatePostScore } from "./score";
+import { FEEDS, getOrCreateSource } from "../source";
+import { scrapeArticle } from "../scraper";
+import { batchSummarize } from "../ai";
+import { insertPostWithUniqueSlug } from "../../utils/slug";
+import { detectCategoryId } from "../category";
+import { calculatePostScore } from "../score";
 
-import type { RawArticle, ScrapedArticle, EnrichedArticle } from "./types";
+import type { RawArticle, ScrapedArticle, EnrichedArticle } from "../types";
 
 // ── Config ─────────────────────────────────────────
 

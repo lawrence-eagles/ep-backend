@@ -56,24 +56,6 @@ Return a complete production ready createCommentsController.ts code. Do not omit
 Note I use node-redis. -->
 
 <!--
-How to use the cron route
-1. DEPLOY YOUR APP Make sure your app is live: https://your-app.up.railway.app
-2. CREATE RAILWAY CRON JOB
-    🔧 In Railway Dashboard:xx  x
-    Go to your project
-    Click “+ New”
-    Select “Cron Job”
-3. Fill in: Command: curl -H "x-cron-secret: $CRON*SECRET" https://your-app.up.railway.app/api/cron/flush
-    Schedule: */5 * * * *  runs every 5 minute for low traffic. Note chnage to every 2 minutes for high traffic.
-
-4. SAVE & DEPLOY
-5. VERIFY IT WORKS check logs in Railway:
-   Deployments → Logs You should see:
-   🧠 Flushing share clicks...
-   Flushed 123: 10
-
-Note the backslashes in the cron should not be there they are added by markdown
-
 // Share app flow
 https://eaglespressbackend.com/s/UUID
 ↓

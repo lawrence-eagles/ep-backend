@@ -16,7 +16,6 @@ import commentsRoutes from "./routes/commentsRoutes";
 import appShareRoutes from "./routes/appRoutes";
 import redirectRoutes from "./routes/redirectRoutes";
 import afterAuthCallback from "./routes/auth-callback";
-import flushCron from "./routes/flushCron";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
