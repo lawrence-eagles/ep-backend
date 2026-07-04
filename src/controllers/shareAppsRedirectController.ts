@@ -129,7 +129,7 @@ export const shareAppsRedirectControllerVersionOne = async (
     res.cookie("sid", shareId, {
       httpOnly: true,
       path: "/",
-      sameSite: "lax",
+      sameSite: env.NODE_ENV === "production" ? "none" : "lax",
       secure: env.NODE_ENV === "production",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
