@@ -79,4 +79,8 @@ FRONTEND PAGE (/downloads or app)
 Generationg keys with node:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
+  .default(sql`uuidv7()`)
+
+  above is my followsHeadline.ts code, check if it works with uuid version 7 or if I need to updated anything. If it works with uuid version 7 do nothing, only tell me.
+
 -->
