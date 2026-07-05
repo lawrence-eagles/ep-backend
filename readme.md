@@ -81,6 +81,52 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
   .default(sql`uuidv7()`)
 
-  above is my followsHeadline.ts code, check if it works with uuid version 7 or if I need to updated anything. If it works with uuid version 7 do nothing, only tell me.
+
+  The commented out index in share table should follow this rules:
+🧠 When You SHOULD Uncomment It
+✅ 1. Fetching recent shares for a post
+SELECT *
+FROM shares
+WHERE post_id = ?
+ORDER BY created_at DESC
+LIMIT 20;
+
+👉 This is the #1 reason to add the index.
+
+Why it matters
+
+Without the composite index:
+
+Postgres uses idx_shares_post_id
+Then sorts results in memory (ORDER BY created_at)
+
+With the composite index:
+
+Postgres reads rows already sorted
+No extra sorting step
+
+👉 Big performance win at scale
+
+✅ 2. Infinite scroll / pagination
+SELECT *
+FROM shares
+WHERE post_id = ?
+  AND created_at < ?
+ORDER BY created_at DESC
+LIMIT 20;
+
+👉 This is cursor-based pagination (production standard)
+
+With index:
+Fast range scan
+No full scan
+Stable pagination
+✅ 3. “Latest activity” features
+
+Examples:
+
+“Recent shares”
+“Trending posts (recent shares weight more)”
+Activity feeds
 
 -->
