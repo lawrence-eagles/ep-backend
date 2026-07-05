@@ -1,16 +1,6 @@
 // Schemas
 
 // APP TABLES
-// user
-// posts
-// sources
-// categories
-// likes
-// bookmarks
-// comments
-// follows
-// user_behavior
-
 // User Table
 // db/schema/user.ts
 import {
@@ -436,6 +426,58 @@ export const userBehavior = pgTable(
     // ✅ User-based queries (what user likes)
     index("idx_user_behavior_user_category").on(t.userId, t.categoryId),
   ],
+);
+
+// SHARE APP TABLES
+
+export const shareApps = pgTable("shares_apps", {
+  id: uuid("id").defaultRandom().primaryKey(),
+
+  userId: uuid("user_id").notNull(),
+  postId: uuid("post_id"),
+  channel: text("channel").notNull(),
+  // 🔥 CLICK TRACKING
+  clicks: integer("clicks").default(0).notNull(),
+
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// share clicks table
+export const shareClicks = pgTable(
+  "share_clicks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    shareId: uuid("share_id")
+      .notNull()
+      .references(() => shareApps.id, { onDelete: "cascade" }),
+
+    ipHash: text("ip_hash").notNull(),
+    userAgent: text("user_agent"),
+    fingerprint: text("fingerprint"),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("share_click_idx").on(t.shareId)],
+);
+
+// share conversions table
+export const shareConversions = pgTable(
+  "share_conversions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    shareId: uuid("share_id")
+      .notNull()
+      .references(() => shareApps.id, { onDelete: "cascade" }),
+
+    userId: uuid("user_id").notNull(),
+
+    type: text("type").notNull(),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("unique_conversion").on(t.shareId, t.userId, t.type)],
 );
 
 // Relations

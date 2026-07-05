@@ -6,14 +6,16 @@
 4. Verify the isValidContent function learn what it does it seems too strong. ✅
 5. Research how to implement protected route in better auth both for frontend and backend.
 6. Implement protected routes where needed. ✅
-7. Implement the next 5 routes
+7. Implement the next 5 routes ✅
 8. Update category keywords
 9. Update RSS feeds
-10. Add route that allows users to share (recommend) app
+10. Add route that allows users to share (recommend) app ✅
 11. Add route that allows users to rate app
 12. Add push notification for mobile
 13. Think of adding jobs to your categories
 14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
+15. Implement email marketing -- study and learn how to do it.
+16. Implement WhatsApp marketing. This is how it would work in a way that would enable users share app and/or posts to all their WhatsApp contacts. Or some platform that gets all users WhatsApp contacts/username like email lists and send them messages like email marketing but this is whats app. Do the same for twitter, instagram, facebook and tiktok.
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -50,7 +52,35 @@ Return a complete production ready createCommentsController.ts code. Do not omit
 Note I use node-redis. -->
 
 <!--
-// old validation
-if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid cache shape");
-} -->
+// Share app flow
+https://eaglespressbackend.com/s/UUID
+↓
+Hits Express backend
+↓
+shareAppRedirectController runs
+↓
+Redis tracking + cookie set
+↓
+Redirect to frontend (/downloads or app)
+
+// flow visualization
+User clicks shared link
+↓
+BACKEND ROUTE (/s/:id)
+↓
+Track click (Redis + DB)
+↓
+Set cookie (sid)
+↓
+Redirect
+↓
+FRONTEND PAGE (/downloads or app)
+
+Generationg keys with node:
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+  .default(sql`uuidv7()`)
+
+  above is my followsHeadline.ts code, check if it works with uuid version 7 or if I need to updated anything. If it works with uuid version 7 do nothing, only tell me.
+
+-->
