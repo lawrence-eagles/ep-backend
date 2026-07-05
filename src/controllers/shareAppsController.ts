@@ -13,7 +13,7 @@ const env = getEnv();
  */
 
 // Strict UUID validation
-const uuidSchema = z.uuid();
+// const uuidSchema = z.uuid();
 
 /**
  * 🔥 Allowed share channels
@@ -31,7 +31,7 @@ const allowedChannels = [
 ] as const;
 
 const shareSchema = z.object({
-  postId: uuidSchema,
+  // postId: uuidSchema,
   channel: z.enum(allowedChannels),
 });
 
@@ -66,7 +66,8 @@ export const shareAppsControllerVersionOne = async (
       });
     }
 
-    const { postId, channel } = parsed.data;
+    // const { postId, channel } = parsed.data;
+    const { channel } = parsed.data;
 
     // =========================
     // 3. INSERT (SAFE)
@@ -75,8 +76,13 @@ export const shareAppsControllerVersionOne = async (
       .insert(shareApps)
       .values({
         userId: user.id,
-        postId,
         channel,
+      })
+      .onConflictDoUpdate({
+        target: [shareApps.userId, shareApps.channel],
+        set: {
+          userId: shareApps.userId, // ✅ real no-op (no change at all)
+        },
       })
       .returning();
 

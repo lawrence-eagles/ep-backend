@@ -14,8 +14,14 @@ import {
   uniqueIndex,
   primaryKey,
   AnyPgColumn,
+  pgEnum,
 } from "drizzle-orm/pg-core";
-import { relations, InferSelectModel, InferInsertModel } from "drizzle-orm";
+import {
+  relations,
+  InferSelectModel,
+  InferInsertModel,
+  sql,
+} from "drizzle-orm";
 
 // BETTER AUTH GENERATED TABLES START
 export const user = pgTable("user", {
@@ -92,13 +98,20 @@ export const verification = pgTable(
 
 // BETTER AUTH GENERATED TABLES END.
 
+// UUID version 7 helper function
+export const uuidV7PrimaryKey = () =>
+  uuid("id")
+    .primaryKey()
+    .notNull()
+    .default(sql`uuidv7()`);
+
 // Posts Table
 // db/schema/posts.ts
 // posts table with indexes
 export const posts = pgTable(
   "posts",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
 
     title: text("title").notNull(),
 
@@ -176,7 +189,7 @@ export const posts = pgTable(
 // Source Table
 // db/schema/sources.ts
 export const sources = pgTable("sources", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuidV7PrimaryKey(),
   name: text("name").notNull(),
   url: text("url").notNull().unique(),
 });
@@ -185,7 +198,7 @@ export const sources = pgTable("sources", {
 export const feedAliases = pgTable(
   "feed_aliases",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
 
     // 🔥 normalized alias URL (always store normalized)
     aliasUrl: text("alias_url").notNull(),
@@ -219,7 +232,7 @@ export type NewSource = InferInsertModel<typeof sources>;
 export const categories = pgTable(
   "categories",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
 
     name: text("name").notNull(), // e.g. "Technology"
     slug: text("slug").notNull(), // e.g. "technology"
@@ -327,7 +340,7 @@ export const bookmarks = pgTable(
 export const comments = pgTable(
   "comments",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
 
     content: text("content").notNull(),
 
@@ -429,24 +442,42 @@ export const userBehavior = pgTable(
 );
 
 // SHARE APP TABLES
+// make sure the emum below is in sync with the allowedChannels in shareAppsController.ts
+export const channelEnum = pgEnum("share_channel", [
+  "twitter",
+  "facebook",
+  "whatsapp",
+  "instagram",
+  "tiktok",
+  "linkedin",
+  "email",
+  "copy_link",
+]);
 
-export const shareApps = pgTable("shares_apps", {
-  id: uuid("id").defaultRandom().primaryKey(),
+export const shareApps = pgTable(
+  "share_apps",
+  {
+    id: uuidV7PrimaryKey(),
 
-  userId: uuid("user_id").notNull(),
-  postId: uuid("post_id"),
-  channel: text("channel").notNull(),
-  // 🔥 CLICK TRACKING
-  clicks: integer("clicks").default(0).notNull(),
+    userId: uuid("user_id").notNull(),
+    // postId: uuid("post_id"),
+    channel: channelEnum("channel").notNull(),
+    // 🔥 CLICK TRACKING
+    clicks: integer("clicks").default(0).notNull(),
 
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("unique_user_channel").on(t.userId, t.channel),
+    // index("idx_share_apps_user").on(t.userId), if you ever query WHERE user_id = ? add this index
+  ],
+);
 
 // share clicks table
 export const shareClicks = pgTable(
   "share_clicks",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuidV7PrimaryKey(),
 
     shareId: uuid("share_id")
       .notNull()
@@ -465,7 +496,7 @@ export const shareClicks = pgTable(
 export const shareConversions = pgTable(
   "share_conversions",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuidV7PrimaryKey(),
 
     shareId: uuid("share_id")
       .notNull()
