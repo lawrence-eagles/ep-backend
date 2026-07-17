@@ -2,20 +2,26 @@
 
 1. Solve Redis problem ✅
 2. Solve source type import problem in source.ts ✅
-3. Implement better auth completely
+3. Implement better auth completely ✅
 4. Verify the isValidContent function learn what it does it seems too strong. ✅
-5. Research how to implement protected route in better auth both for frontend and backend.
+5. Research how to implement protected route in better auth both for frontend and backend. ✅
 6. Implement protected routes where needed. ✅
 7. Implement the next 5 routes ✅
 8. Update category keywords
 9. Update RSS feeds
 10. Add route that allows users to share (recommend) app ✅
 11. Add route that allows users to rate app
-12. Add push notification for mobile
+12. Add push notification for mobile ✅
 13. Think of adding jobs to your categories
 14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
 15. Implement email marketing -- study and learn how to do it.
 16. Implement WhatsApp marketing. This is how it would work in a way that would enable users share app and/or posts to all their WhatsApp contacts. Or some platform that gets all users WhatsApp contacts/username like email lists and send them messages like email marketing but this is whats app. Do the same for twitter, instagram, facebook and tiktok.
+17. Add a related product routes
+18. Add delete account route
+19. Add a delete post route --- this should be soft delete
+20. Add terms of service
+21. Add privacy policy
+22. Add searching feature --- use https://typesense.org/ version 2
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -128,5 +134,182 @@ Examples:
 “Recent shares”
 “Trending posts (recent shares weight more)”
 Activity feeds
+
+
+NOTIFICATION ARCHITECURE
+New Article
+   ↓
+API → Redis (dedupe + batch buffer)
+   ↓
+Inngest Event
+   ↓
+Inngest Function (rate limit + batching logic)
+   ↓
+Fetch tokens (Postgres)
+   ↓
+Send via FCM
+   ↓
+Log results (Postgres)
+
+1. batchSize-limit 1000
+2. where to download firebase-admin
+
+// COMPLETE PRODUCTION NOTIFICATION WORKFLOW
+App (iOS / Android / Web)
+   ↓
+FCM SDK generates device token
+   ↓
+Send token → your backend API
+   ↓
+Store in deviceTokens table ✅
+   ↓
+Used later in flushBatch ✅
+
+✅ STEP 1: GET TOKEN ON CLIENT
+📱 Mobile (React Native / Android / iOS)
+
+Using FCM SDK:
+import messaging from '@react-native-firebase/messaging';
+const token = await messaging().getToken();
+
+🌐 Web (if PWA)
+import { getMessaging, getToken } from "firebase/messaging";
+const token = await getToken(messaging, {
+  vapidKey: "YOUR_VAPID_KEY",
+});
+
+✅ STEP 2: SEND TOKEN TO BACKEND
+Call your API:
+await fetch("/api/v1/push/register", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ token }),
+});
+
+
+✅ STEP 5: HANDLE TOKEN REFRESH (IMPORTANT)
+FCM tokens can change.
+Client:
+messaging().onTokenRefresh(async (newToken) => {
+  await sendToBackend(newToken);
+});
+
+
+// MOBILE DEVELOPMENT
+npx install expo-dev-client
+then run project with: npx expo run:android
+
+END TO END PUSH NOTIFICATION FLOW
+App starts
+  ↓
+User logs in (Better Auth session exists)
+  ↓
+Request notification permission
+  ↓
+Get FCM token
+  ↓
+Send token to backend ✅
+  ↓
+Store in DB (you already built this)
+  ↓
+Listen for token refresh
+  ↓
+Update backend when token changes ✅
+
+✅ BEST PRACTICE LOCATION
+📍 App.tsx or useEffect in root
+
+import { useEffect } from "react";
+import messaging from "@react-native-firebase/messaging";
+
+export default function App() {
+  useEffect(() => {
+  let unsubscribe: () => void;
+
+  async function setupPush() {
+    const authStatus = await messaging().requestPermission();
+
+    const enabled =
+      authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+      authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+
+    if (!enabled) return;
+
+    // 🔹 Initial token
+    const token = await messaging().getToken();
+    await sendToBackend(token);
+
+    // 🔹 Listen for token refresh
+    unsubscribe = messaging().onTokenRefresh(async (newToken) => {
+      console.log("FCM Token refreshed:", newToken);
+
+      await sendToBackend(newToken);
+    });
+  }
+
+  setupPush();
+
+  return () => {
+    if (unsubscribe) unsubscribe();
+  };
+}, []);
+}
+
+// SEND TO BACKEND FUNCTION
+async function sendToBackend(token: string) {
+  try {
+    await fetch("https://your-api.com/api/push/register", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include", // if using cookies
+      body: JSON.stringify({
+        token,
+        platform: "android", // or ios
+      }),
+    });
+  } catch (err) {
+    console.error("Failed to register token", err);
+  }
+}
+
+HANDLE FOREGROUND MESSAGES --- NOTIFICATIONS WHEN APP IS OPENED
+ADD TO APP.TS USING USE EFFECT AS SEEN BELOW
+import { useEffect } from "react";
+import messaging from "@react-native-firebase/messaging";
+
+export default function App() {
+
+  // 🔔 Foreground handler
+  useEffect(() => {
+    const unsubscribe = messaging().onMessage(async (remoteMessage) => {
+      console.log("Foreground notification:", remoteMessage);
+
+      // 👉 You can show UI here (toast, banner, etc.)
+    });
+
+    return unsubscribe;
+  }, []);
+
+  return (...);
+}
+
+YOU CAN HANLDE TO UI TO SHOW AS SEEN BELOW
+import { Alert } from "react-native";
+
+messaging().onMessage(async (remoteMessage) => {
+  Alert.alert(
+    remoteMessage.notification?.title ?? "New Update",
+    remoteMessage.notification?.body ?? ""
+  );
+});
+
+OR YOU CAN HANDLE TO UI USING a toast library:
+react-native-toast
+notifee (recommended for advanced control)
+code rabbit review my PR i have fixed all bugs
 
 -->

@@ -511,6 +511,33 @@ export const shareConversions = pgTable(
   (t) => [uniqueIndex("unique_conversion").on(t.shareId, t.userId, t.type)],
 );
 
+// Firebase Notification Tables
+export const deviceTokens = pgTable(
+  "device_tokens",
+  {
+    id: uuidV7PrimaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    platform: text("platform").notNull(), // ios | android | web
+    createdAt: timestamp("created_at").defaultNow(),
+    lastSeenAt: timestamp("last_seen_at").defaultNow(),
+  },
+  (t) => [index("idx_device_tokens_last_seen").on(t.lastSeenAt)],
+);
+
+export const notifications = pgTable("notifications", {
+  id: uuidV7PrimaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
+  status: text("status"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 
 // BETTER AUTH GENERATED RELATIONS START

@@ -38,6 +38,7 @@ export const likeVersionOne = async (req: Request, res: Response) => {
 
   let isNewLike = false;
   let slug: string | null = null;
+  let categoryId: string | null = null;
 
   try {
     // =========================
@@ -61,7 +62,7 @@ export const likeVersionOne = async (req: Request, res: Response) => {
 
       const post = postResult.rows[0];
       slug = post.slug;
-      const categoryId = post.category_id;
+      categoryId = post.category_id;
 
       const likeResult = await tx.execute(sql`
         INSERT INTO likes (user_id, post_id)
@@ -101,12 +102,32 @@ export const likeVersionOne = async (req: Request, res: Response) => {
 
       if (redis) {
         try {
+          const ttl = 60 * 60 * 24 * 30;
           const pipeline = redis.multi();
 
+          // 🔥 Post-level invalidation
           pipeline.incr(`post:${slug}:version`);
+          pipeline.expire(`post:${slug}:version`, ttl);
+
+          // 🔥 Feed invalidation
           pipeline.incr(`feed:${userId}:version`);
+          pipeline.expire(`feed:${userId}:version`, ttl);
+
+          // 🔥 Trending invalidation
           pipeline.incr(`feed:trending:version`);
-          pipeline.incr(`post:${postId}:likes`);
+          pipeline.expire(`feed:trending:version`, ttl);
+
+          // 🔥 Likes counter
+          pipeline.del(`post:${postId}:likes`);
+
+          if (categoryId) {
+            // 🔥 Category feed invalidation
+            pipeline.incr(`category_feed:${userId}:version`);
+            pipeline.expire(`category_feed:${userId}:version`, ttl);
+
+            pipeline.incr(`category:${categoryId}:version`);
+            pipeline.expire(`category:${categoryId}:version`, ttl);
+          }
 
           await pipeline.exec();
         } catch (err) {
@@ -158,6 +179,7 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
 
   let isRemoved = false;
   let slug: string | null = null;
+  let categoryId: string | null = null;
 
   try {
     // =========================
@@ -181,7 +203,7 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
 
       const post = postResult.rows[0];
       slug = post.slug;
-      const categoryId = post.category_id;
+      categoryId = post.category_id;
 
       const deleteResult = await tx.execute(sql`
         DELETE FROM likes
@@ -220,20 +242,34 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
 
       if (redis) {
         try {
+          const ttl = 60 * 60 * 24 * 30;
           const pipeline = redis.multi();
 
+          // 🔥 Post-level invalidation
           pipeline.incr(`post:${slug}:version`);
+          pipeline.expire(`post:${slug}:version`, ttl);
+
+          // 🔥 Feed invalidation
           pipeline.incr(`feed:${userId}:version`);
+          pipeline.expire(`feed:${userId}:version`, ttl);
+
+          // 🔥 Trending invalidation
           pipeline.incr(`feed:trending:version`);
-          pipeline.decr(`post:${postId}:likes`);
+          pipeline.expire(`feed:trending:version`, ttl);
+
+          if (categoryId) {
+            // 🔥 Category feed invalidation
+            pipeline.incr(`category_feed:${userId}:version`);
+            pipeline.expire(`category_feed:${userId}:version`, ttl);
+
+            pipeline.incr(`category:${categoryId}:version`);
+            pipeline.expire(`category:${categoryId}:version`, ttl);
+          }
+
+          // 🔥 Likes counter (optional cache)
+          pipeline.del(`post:${postId}:likes`);
 
           await pipeline.exec();
-
-          // 🔥 Safety clamp (non-critical)
-          const likes = await redis.get(`post:${postId}:likes`);
-          if (likes && parseInt(likes, 10) < 0) {
-            await redis.set(`post:${postId}:likes`, 0);
-          }
         } catch (err) {
           console.error("REDIS UNLIKE ERROR:", err);
         }

@@ -16,6 +16,8 @@ import commentsRoutes from "./routes/commentsRoutes";
 import appShareRoutes from "./routes/appRoutes";
 import redirectRoutes from "./routes/redirectRoutes";
 import afterAuthCallback from "./routes/auth-callback";
+import registerDeviceTokenRoute from "./routes/deviceTokenRoutes";
+import singlePostRoutes from "./routes/singlePostRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -50,6 +52,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/app", appShareRoutes);
+app.use("/api/v1/push", registerDeviceTokenRoute);
 app.use("/api/v1/after-auth", afterAuthCallback); // call this route after better auth login or registration succeeds. Also must pass cookie
 app.use("/api/v1/posts", feedsRoutes);
 app.use("/api/v1/bookmarks", bookmarksRoutes);
@@ -58,6 +61,7 @@ app.use("/api/v1/follows", followsRoutes);
 app.use("/api/v1/likes", likesRoutes);
 app.use("/api/v1/shares", sharesRoutes);
 app.use("/api/v1/comments", commentsRoutes);
+app.use("/api/v1/single-post/:slug", singlePostRoutes);
 app.use("/s/:id", redirectRoutes); // handles redirect when user wants to share app
 
 app.listen(env.PORT, () =>

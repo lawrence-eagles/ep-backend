@@ -95,10 +95,17 @@ export const followVersionOne = async (req: Request, res: Response) => {
     // =========================
     if (isNewFollow) {
       void safeCacheInvalidate(async (redis) => {
+        const ttl = 60 * 60 * 24 * 30;
         const pipeline = redis.multi();
 
         pipeline.incr(`following:${userId}:version`);
+        pipeline.expire(`following:${userId}:version`, ttl);
+
         pipeline.incr(`feed:${userId}:version`);
+        pipeline.expire(`feed:${userId}:version`, ttl);
+
+        pipeline.incr(`category_feed:${userId}:version`);
+        pipeline.expire(`category_feed:${userId}:version`, ttl);
 
         await pipeline.exec();
       });
@@ -191,10 +198,17 @@ export const unfollowVersionOne = async (req: Request, res: Response) => {
     // =========================
     if (wasUnfollowed) {
       void safeCacheInvalidate(async (redis) => {
+        const ttl = 60 * 60 * 24 * 30;
         const pipeline = redis.multi();
 
         pipeline.incr(`following:${userId}:version`);
+        pipeline.expire(`following:${userId}:version`, ttl);
+
         pipeline.incr(`feed:${userId}:version`);
+        pipeline.expire(`feed:${userId}:version`, ttl);
+
+        pipeline.incr(`category_feed:${userId}:version`);
+        pipeline.expire(`category_feed:${userId}:version`, ttl);
 
         await pipeline.exec();
       });

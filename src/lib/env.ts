@@ -22,6 +22,11 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   CRON_SECRET: z.string().min(1),
   IP_HASH_SECRET: z.string().min(1),
+  FCM_PROJECT_ID: z.string().min(1),
+  FCM_CLIENT_EMAIL: z.string().min(1),
+  FCM_PRIVATE_KEY: z.string().min(1),
+  RESEND_API_KEY: z.string().min(1),
+  DOMAIN: z.string().min(1),
   //   CLERK_PUBLISHABLE_KEY: z.string().min(1),
   //   CLERK_WEBHOOK_SECRET: z.string().optional(),
   //   POLAR_ACCESS_TOKEN: z.string().optional(),
@@ -41,7 +46,20 @@ export function loadEnv() {
   const parsed = envSchema.safeParse(process.env);
 
   if (!parsed.success) {
-    console.error(parsed.error.flatten().fieldErrors);
+    const tree = z.treeifyError(parsed.error);
+
+    console.error("❌ Invalid environment variables");
+    console.error(JSON.stringify(tree, null, 2));
+
+    /**
+     * Optional: flat readable logs
+     */
+    console.error(
+      parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      })),
+    );
 
     throw new Error("Invalid environemnt variables");
   }
