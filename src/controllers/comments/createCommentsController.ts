@@ -208,12 +208,14 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
         multi.incr(`feed:trending:version`);
         multi.expire(`feed:trending:version`, ttl);
 
-        multi.incr(`category_feed:${userId}:version`);
-        multi.expire(`category_feed:${userId}:version`, ttl);
+        if (categoryId) {
+          multi.incr(`category_feed:${userId}:version`);
+          multi.expire(`category_feed:${userId}:version`, ttl);
 
-        // ✅ NEW (critical fix)
-        multi.incr(`category:${categoryId}:version`);
-        multi.expire(`category:${categoryId}:version`, ttl);
+          // ✅ NEW (critical fix)
+          multi.incr(`category:${categoryId}:version`);
+          multi.expire(`category:${categoryId}:version`, ttl);
+        }
 
         await multi.exec();
       } catch (err) {

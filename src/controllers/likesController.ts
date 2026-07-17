@@ -120,12 +120,14 @@ export const likeVersionOne = async (req: Request, res: Response) => {
           // 🔥 Likes counter
           pipeline.del(`post:${postId}:likes`);
 
-          // 🔥 Category feed invalidation
-          pipeline.incr(`category_feed:${userId}:version`);
-          pipeline.expire(`category_feed:${userId}:version`, ttl);
+          if (categoryId) {
+            // 🔥 Category feed invalidation
+            pipeline.incr(`category_feed:${userId}:version`);
+            pipeline.expire(`category_feed:${userId}:version`, ttl);
 
-          pipeline.incr(`category:${categoryId}:version`);
-          pipeline.expire(`category:${categoryId}:version`, ttl);
+            pipeline.incr(`category:${categoryId}:version`);
+            pipeline.expire(`category:${categoryId}:version`, ttl);
+          }
 
           await pipeline.exec();
         } catch (err) {
@@ -255,12 +257,14 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
           pipeline.incr(`feed:trending:version`);
           pipeline.expire(`feed:trending:version`, ttl);
 
-          // 🔥 Category feed invalidation
-          pipeline.incr(`category_feed:${userId}:version`);
-          pipeline.expire(`category_feed:${userId}:version`, ttl);
+          if (categoryId) {
+            // 🔥 Category feed invalidation
+            pipeline.incr(`category_feed:${userId}:version`);
+            pipeline.expire(`category_feed:${userId}:version`, ttl);
 
-          pipeline.incr(`category:${categoryId}:version`);
-          pipeline.expire(`category:${categoryId}:version`, ttl);
+            pipeline.incr(`category:${categoryId}:version`);
+            pipeline.expire(`category:${categoryId}:version`, ttl);
+          }
 
           // 🔥 Likes counter (optional cache)
           pipeline.del(`post:${postId}:likes`);
