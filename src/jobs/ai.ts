@@ -98,7 +98,7 @@ export async function batchSummarize(
   // temperature: 0.3 keeps output consistent and close to the specified format.
   const systemPrompt = `
 You are a news summarization assistant for Eaglespress, a news aggregator app.
-Summarize each article in exactly 4 clear, factual, SEO-friendly sentences.
+Summarize each article in exactly 4 clear, factual, SEO-friendly sentences. Do not skip any articles.
 
 Return ONLY a valid JSON array. No markdown, no explanation, no code fences.
 The array must have exactly ${contents.length} objects in this exact shape:

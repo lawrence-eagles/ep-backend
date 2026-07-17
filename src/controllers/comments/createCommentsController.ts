@@ -191,14 +191,30 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
     // =========================
     const redis = await getRedisSafe();
 
-    if (redis && slug) {
+    if (redis) {
       try {
+        const ttl = 60 * 60 * 24 * 30;
         const multi = redis.multi();
 
+        // 🔥 Comments invalidation
         multi.incr(`comments:${postId}:version`);
-        multi.incr(`post:${slug}:version`);
+        multi.expire(`comments:${postId}:version`, ttl);
+
+        // 🔥 Post invalidation (FIXED: use postId)
+        multi.incr(`post:${postId}:version`);
+        multi.expire(`post:${postId}:version`, ttl);
+
+        // 🔥 Feed invalidation
         multi.incr(`feed:${userId}:version`);
+        multi.expire(`feed:${userId}:version`, ttl);
+
+        // 🔥 Trending invalidation
         multi.incr(`feed:trending:version`);
+        multi.expire(`feed:trending:version`, ttl);
+
+        // 🔥 Category feed invalidation (you added elsewhere — include here too)
+        multi.incr(`category_feed:${userId}:version`);
+        multi.expire(`category_feed:${userId}:version`, ttl);
 
         await multi.exec();
       } catch (err) {

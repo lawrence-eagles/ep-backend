@@ -381,6 +381,18 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
             if (!inserted) return null;
 
+            // ✅ Emit event instead of calling step.run
+            // This is for push notification
+            await step.sendEvent({
+              name: "article.created",
+              data: {
+                postId: inserted.id,
+                categoryId,
+                title: article.title,
+                summary: article.summary,
+              },
+            });
+
             // ✅ FIXED: return type now Promise<void> + non-blocking
             await safeCacheInvalidate(async (redis) => {
               await redis.set(getDedupeKey(article.url), "1", {
@@ -389,6 +401,13 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
             });
 
             return article.url;
+            // consider returning instead
+            // return {
+            //   id: inserted.id,
+            //   categoryId,
+            //   title: article.title,
+            //   summary: article.summary,
+            // };
           }),
         ),
       );

@@ -101,12 +101,28 @@ export const likeVersionOne = async (req: Request, res: Response) => {
 
       if (redis) {
         try {
+          const ttl = 60 * 60 * 24 * 30;
           const pipeline = redis.multi();
 
-          pipeline.incr(`post:${slug}:version`);
+          // 🔥 Post-level invalidation (CONSISTENT: use postId)
+          pipeline.incr(`post:${postId}:version`);
+          pipeline.expire(`post:${postId}:version`, ttl);
+
+          // 🔥 Feed invalidation
           pipeline.incr(`feed:${userId}:version`);
+          pipeline.expire(`feed:${userId}:version`, ttl);
+
+          // 🔥 Trending invalidation
           pipeline.incr(`feed:trending:version`);
+          pipeline.expire(`feed:trending:version`, ttl);
+
+          // 🔥 Likes counter
           pipeline.incr(`post:${postId}:likes`);
+          pipeline.expire(`post:${postId}:likes`, ttl);
+
+          // 🔥 Category feed invalidation
+          pipeline.incr(`category_feed:${userId}:version`);
+          pipeline.expire(`category_feed:${userId}:version`, ttl);
 
           await pipeline.exec();
         } catch (err) {
@@ -220,20 +236,30 @@ export const unlikeVersionOne = async (req: Request, res: Response) => {
 
       if (redis) {
         try {
+          const ttl = 60 * 60 * 24 * 30;
           const pipeline = redis.multi();
 
-          pipeline.incr(`post:${slug}:version`);
+          // 🔥 Post-level invalidation
+          pipeline.incr(`post:${postId}:version`);
+          pipeline.expire(`post:${postId}:version`, ttl);
+
+          // 🔥 Feed invalidation
           pipeline.incr(`feed:${userId}:version`);
+          pipeline.expire(`feed:${userId}:version`, ttl);
+
+          // 🔥 Trending invalidation
           pipeline.incr(`feed:trending:version`);
+          pipeline.expire(`feed:trending:version`, ttl);
+
+          // 🔥 Category feed invalidation
+          pipeline.incr(`category_feed:${userId}:version`);
+          pipeline.expire(`category_feed:${userId}:version`, ttl);
+
+          // 🔥 Likes counter (optional cache)
           pipeline.decr(`post:${postId}:likes`);
+          pipeline.expire(`post:${postId}:likes`, ttl);
 
           await pipeline.exec();
-
-          // 🔥 Safety clamp (non-critical)
-          const likes = await redis.get(`post:${postId}:likes`);
-          if (likes && parseInt(likes, 10) < 0) {
-            await redis.set(`post:${postId}:likes`, 0);
-          }
         } catch (err) {
           console.error("REDIS UNLIKE ERROR:", err);
         }

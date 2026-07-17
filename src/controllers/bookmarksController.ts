@@ -115,11 +115,20 @@ export const bookmarkVersionOne = async (req: Request, res: Response) => {
     // =========================
     if (isNewBookmark && slug) {
       void safeCacheInvalidate(async (redis) => {
+        const ttl = 60 * 60 * 24 * 30;
         const pipeline = redis.multi();
 
         pipeline.incr(`bookmarks:${userId}:version`);
+        pipeline.expire(`bookmarks:${userId}:version`, ttl);
+
         pipeline.incr(`post:${slug}:version`);
+        pipeline.expire(`post:${slug}:version`, ttl);
+
         pipeline.incr(`feed:${userId}:version`);
+        pipeline.expire(`feed:${userId}:version`, ttl);
+
+        pipeline.incr(`category_feed:${userId}:version`);
+        pipeline.expire(`category_feed:${userId}:version`, ttl);
 
         await pipeline.exec();
       });
@@ -225,11 +234,20 @@ export const unbookmarkVersionOne = async (req: Request, res: Response) => {
     // =========================
     if (wasDeleted && slug) {
       void safeCacheInvalidate(async (redis) => {
+        const ttl = 60 * 60 * 24 * 30;
         const pipeline = redis.multi();
 
         pipeline.incr(`bookmarks:${userId}:version`);
+        pipeline.expire(`bookmarks:${userId}:version`, ttl);
+
         pipeline.incr(`post:${slug}:version`);
+        pipeline.expire(`post:${slug}:version`, ttl);
+
         pipeline.incr(`feed:${userId}:version`);
+        pipeline.expire(`feed:${userId}:version`, ttl);
+
+        pipeline.incr(`category_feed:${userId}:version`);
+        pipeline.expire(`category_feed:${userId}:version`, ttl);
 
         await pipeline.exec();
       });
