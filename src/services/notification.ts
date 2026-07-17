@@ -19,11 +19,9 @@ export async function queueNotification(userId: string, article: any) {
   // 🔒 1. DEDUPE
   if (redis) {
     const dedupeKey = `notif:sent:${userId}:${article.id}`;
-    const exists = await redis.get(dedupeKey);
+    const set = await redis.set(dedupeKey, "1", { EX: 3600, NX: true });
 
-    if (exists) return;
-
-    await redis.set(dedupeKey, "1", { EX: 3600 });
+    if (!set) return;
   }
 
   // 📦 2. BATCH BUFFER (Redis list)

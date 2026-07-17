@@ -21,8 +21,16 @@ type Cursor = {
   id: string;
 };
 
+// ✅ FIX: strict cursor validation
+const cursorSchema = z.object({
+  createdAt: z.string().refine((val) => !Number.isNaN(Date.parse(val)), {
+    message: "Invalid createdAt",
+  }),
+  id: z.uuid(),
+});
+
 // =========================
-// 🧾 ROW TYPE (FIXED)
+// 🧾 ROW TYPE
 // =========================
 interface CategoryFeedRow extends Record<string, unknown> {
   id: string;
@@ -46,7 +54,7 @@ interface CategoryFeedRow extends Record<string, unknown> {
 // =========================
 async function getRedisSafe() {
   try {
-    return await getRedis(); // must return node-redis client
+    return await getRedis();
   } catch (err) {
     console.error("REDIS INIT ERROR:", err);
     return null;
@@ -69,33 +77,26 @@ function decodeCursor(raw: string): Cursor {
     throw new Error("Invalid cursor");
   }
 
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    typeof (parsed as any).createdAt !== "string" ||
-    Number.isNaN(Date.parse((parsed as any).createdAt)) ||
-    typeof (parsed as any).id !== "string"
-  ) {
+  const result = cursorSchema.safeParse(parsed);
+
+  if (!result.success) {
     throw new Error("Invalid cursor");
   }
 
-  return {
-    createdAt: (parsed as any).createdAt,
-    id: (parsed as any).id,
-  };
+  return result.data;
 }
 
 // =========================
 // 🔥 CACHE KEY
 // =========================
-
 function buildCategoryFeedKey(
   userId: string,
   categoryId: string,
   cursor: string | null,
-  version: string,
+  userVersion: string,
+  categoryVersion: string,
 ) {
-  return `feed:v1:category:${userId}:${categoryId}:v${version}:${cursor ?? "first"}`;
+  return `feed:v1:category:${userId}:${categoryId}:uv${userVersion}:cv${categoryVersion}:${cursor ?? "first"}`;
 }
 
 // =========================
@@ -134,13 +135,17 @@ export const categoryFeedVersionOne = async (req: Request, res: Response) => {
     let cacheKey: string | null = null;
 
     if (redis) {
-      const categoryVersion =
+      const userVersion =
         (await redis.get(`category_feed:${userId}:version`)) ?? "1";
+
+      const categoryVersion =
+        (await redis.get(`category:${categoryId}:version`)) ?? "1";
 
       cacheKey = buildCategoryFeedKey(
         userId,
         categoryId,
         cursorParam,
+        userVersion,
         categoryVersion,
       );
 
@@ -280,7 +285,7 @@ export const categoryFeedVersionOne = async (req: Request, res: Response) => {
     if (redis && cacheKey) {
       try {
         await redis.set(cacheKey, JSON.stringify(response), {
-          EX: 300, // 5 minutes
+          EX: 300,
         });
       } catch (err) {
         console.error("REDIS WRITE ERROR:", err);

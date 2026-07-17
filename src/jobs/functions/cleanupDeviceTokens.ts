@@ -25,10 +25,11 @@ export const cleanupDeviceTokens: InngestFunction.Any = inngest.createFunction(
     const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     let totalDeleted = 0;
+    let iteration = 0;
 
     while (true) {
       // ✅ STEP 1: Select batch of stale tokens
-      const ids = await step.run("select-batch", async () => {
+      const ids = await step.run(`select-batch-${iteration}`, async () => {
         const rows = await db
           .select({ id: deviceTokens.id })
           .from(deviceTokens)
@@ -41,16 +42,21 @@ export const cleanupDeviceTokens: InngestFunction.Any = inngest.createFunction(
       if (!ids.length) break;
 
       // ✅ STEP 2: Delete selected IDs
-      const deletedCount = await step.run("delete-batch", async () => {
-        await db.delete(deviceTokens).where(inArray(deviceTokens.id, ids));
+      const deletedCount = await step.run(
+        `delete-batch-${iteration}`,
+        async () => {
+          await db.delete(deviceTokens).where(inArray(deviceTokens.id, ids));
 
-        return ids.length;
-      });
+          return ids.length;
+        },
+      );
 
       totalDeleted += deletedCount;
 
       // 🛑 stop if last batch
       if (ids.length < BATCH_SIZE) break;
+
+      iteration++;
     }
 
     // 📊 Logging (observability)

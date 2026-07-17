@@ -19,21 +19,19 @@ export const fanoutNotifications: InngestFunction.Any = inngest.createFunction(
 
         if (!followers.length) break;
 
-        await Promise.allSettled(
-          followers.map((user) =>
-            inngest.send({
-              name: "notification.enqueue",
-              data: {
-                userId: user.id,
-                article: {
-                  id: postId,
-                  title,
-                  summary,
-                },
-              },
-            }),
-          ),
-        );
+        const events = followers.map((user) => ({
+          name: "notification.enqueue",
+          data: {
+            userId: user.id,
+            article: {
+              id: postId,
+              title,
+              summary,
+            },
+          },
+        }));
+
+        await inngest.send(events);
 
         offset += batchSize;
       }

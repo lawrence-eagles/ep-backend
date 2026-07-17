@@ -20,7 +20,7 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
   {
     id: "flush-batch",
     rateLimit: {
-      limit: 100, // ✅ global rate limit
+      limit: 100,
       period: "1s",
     },
     triggers: { event: "notification/batch.check" },
@@ -33,23 +33,48 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
 
     const batchKey = `notif:batch:${userId}`;
 
-    // 🧠 Step 1: get batch
-    const items = await step.run("get-batch", async () => {
-      return await redis.lRange(batchKey, 0, -1);
+    // 🧠 Step 1: get and clear batch atomically
+    const items = await step.run("get-and-clear-batch", async () => {
+      const multi = redis.multi();
+
+      multi.lRange(batchKey, 0, -1);
+      multi.del(batchKey);
+
+      const results = await multi.exec();
+
+      if (!results || results.length === 0) return [];
+
+      // ✅ Properly narrow the type
+      const firstResult = results[0];
+
+      if (Array.isArray(firstResult)) {
+        return firstResult as string[];
+      }
+
+      // fallback safety
+      return [];
     });
 
     if (!items.length) return;
 
-    // 🧠 Step 2: clear batch
-    await redis.del(batchKey);
+    // ✅ Safe JSON parsing
+    const articles = items
+      .map((i) => {
+        try {
+          return JSON.parse(i);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as { id: string; title: string }[];
 
-    const articles = items.map((i) => JSON.parse(i));
+    if (!articles.length) return;
 
-    // 🧠 Step 3: create message
+    // 🧠 Step 2: create message
     const title = `${articles.length} new articles`;
     const body = articles[0].title;
 
-    // 🧠 Step 4: fetch tokens
+    // 🧠 Step 3: fetch tokens
     const tokens = await step.run("get-tokens", async () => {
       return db
         .select()
@@ -57,7 +82,9 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
         .where(eq(deviceTokens.userId, userId));
     });
 
-    // 🧠 Step 5: send push
+    if (!tokens.length) return;
+
+    // 🧠 Step 4: send push notifications
     for (const t of tokens) {
       try {
         await sendPush(t.token, {
@@ -78,11 +105,11 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
           userId,
           postId: articles[0].id,
           status: "failed",
-          error: err.message,
+          error: err?.message ?? "unknown_error",
         });
 
         // ❌ remove bad token
-        if (err.message === "INVALID_TOKEN") {
+        if (err?.message === "INVALID_TOKEN") {
           await db.delete(deviceTokens).where(eq(deviceTokens.token, t.token));
         }
       }

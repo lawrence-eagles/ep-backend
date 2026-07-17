@@ -31,8 +31,8 @@ export const auth = betterAuth({
   ],
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
-      resend.emails.send({
-        from: "Eaglespress <noreply@yourdomain.com>",
+      await resend.emails.send({
+        from: `Eaglespress <noreply@${env.DOMAIN}>`,
         to: user.email,
         subject: "Verify your email",
         react: VerifyEmail({
@@ -57,8 +57,8 @@ export const auth = betterAuth({
     requireEmailVerification: true,
     revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, url }) => {
-      resend.emails.send({
-        from: "Eaglespress <noreply@yourdomain.com>",
+      await resend.emails.send({
+        from: `Eaglespress <noreply@${env.DOMAIN}>`,
         to: user.email,
         subject: "Reset your password",
         react: ForgotPasswordEmail({
@@ -69,7 +69,7 @@ export const auth = betterAuth({
     },
     onPasswordReset: async ({ user }, request) => {
       // your logic here
-      console.log(`Password for user ${user.email} has been reset.`);
+      console.log(`Password for user ${user.id} has been reset.`);
     },
   },
   database: drizzleAdapter(db, {

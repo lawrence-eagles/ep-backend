@@ -383,7 +383,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
             // ✅ Emit event instead of calling step.run
             // This is for push notification
-            await step.sendEvent({
+            await inngest.send({
               name: "article.created",
               data: {
                 postId: inserted.id,

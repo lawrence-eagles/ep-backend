@@ -14,6 +14,7 @@ export const enqueueNotification: InngestFunction.Any = inngest.createFunction(
       await queueNotification(userId, article);
     } catch (err) {
       console.error("QUEUE ERROR:", err);
+      throw err; // Allow Inngest to retry the job
     }
   },
 );
