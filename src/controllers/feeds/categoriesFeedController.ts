@@ -135,11 +135,13 @@ export const categoryFeedVersionOne = async (req: Request, res: Response) => {
     let cacheKey: string | null = null;
 
     if (redis) {
-      const userVersion =
-        (await redis.get(`category_feed:${userId}:version`)) ?? "1";
+      const userVersionRaw = await redis.get(`category_feed:${userId}:version`);
+      const categoryVersionRaw = await redis.get(
+        `category:${categoryId}:version`,
+      );
 
-      const categoryVersion =
-        (await redis.get(`category:${categoryId}:version`)) ?? "1";
+      const userVersion = userVersionRaw ?? "0";
+      const categoryVersion = categoryVersionRaw ?? "0";
 
       cacheKey = buildCategoryFeedKey(
         userId,
