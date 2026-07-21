@@ -16,7 +16,7 @@
 14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
 15. Implement email marketing -- study and learn how to do it.
 16. Implement WhatsApp marketing. This is how it would work in a way that would enable users share app and/or posts to all their WhatsApp contacts. Or some platform that gets all users WhatsApp contacts/username like email lists and send them messages like email marketing but this is whats app. Do the same for twitter, instagram, facebook and tiktok.
-17. Add a related product routes
+17. Add a related product routes --- in version two
 18. Add delete account route
 19. Add a delete post route --- this should be soft delete
 20. Add terms of service
