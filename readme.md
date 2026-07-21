@@ -22,6 +22,7 @@
 20. Add terms of service
 21. Add privacy policy
 22. Add searching feature --- use https://typesense.org/ version 2
+23. Add explore routes to all users to filter by category ✅
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -311,5 +312,37 @@ OR YOU CAN HANDLE TO UI USING a toast library:
 react-native-toast
 notifee (recommended for advanced control)
 code rabbit review my PR i have fixed all bugs
+
+# Science daily two rss feeds just in case one fails
+https://www.sciencedaily.com/rss/top/health.xml
+https://www.sciencedaily.com/rss/health_medicine.xml
+
+# chatgpt advice
+🧠 Pro Insight (important for you)
+From experience building aggregators:
+Combine 3 types:
+Publisher feeds → BBC, Guardian
+Wire services → Reuters, UPI
+Aggregators → Google News
+
+👉 This gives:
+
+Coverage (no missing stories)
+Diversity (less bias)
+Freshness (real-time updates)
+
+  { name: "TechCrunch Startups", url: "https://techcrunch.com/tag/startups/feed/" },
+  { name: "VentureBeat", url: "https://venturebeat.com/feed/" },
+
+  Science: [
+    "nasa",
+    "space",
+    "research",
+    "climate",
+    "environment",
+    "study",
+    "scientist",
+    "discovery",
+  ],
 
 -->
