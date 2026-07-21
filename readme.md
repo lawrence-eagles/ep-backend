@@ -7,8 +7,8 @@
 5. Research how to implement protected route in better auth both for frontend and backend. ✅
 6. Implement protected routes where needed. ✅
 7. Implement the next 5 routes ✅
-8. Update category keywords
-9. Update RSS feeds
+8. Update category keywords ✅
+9. Update RSS feeds ✅
 10. Add route that allows users to share (recommend) app ✅
 11. Add route that allows users to rate app
 12. Add push notification for mobile ✅
@@ -16,12 +16,13 @@
 14. Track reading or activity time and display modal asking users to share (recommend) app after they spend a specific amount of time on app.
 15. Implement email marketing -- study and learn how to do it.
 16. Implement WhatsApp marketing. This is how it would work in a way that would enable users share app and/or posts to all their WhatsApp contacts. Or some platform that gets all users WhatsApp contacts/username like email lists and send them messages like email marketing but this is whats app. Do the same for twitter, instagram, facebook and tiktok.
-17. Add a related product routes
+17. Add a related product routes --- in version two
 18. Add delete account route
 19. Add a delete post route --- this should be soft delete
 20. Add terms of service
 21. Add privacy policy
 22. Add searching feature --- use https://typesense.org/ version 2
+23. Add explore routes to all users to filter by category ✅
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -311,5 +312,37 @@ OR YOU CAN HANDLE TO UI USING a toast library:
 react-native-toast
 notifee (recommended for advanced control)
 code rabbit review my PR i have fixed all bugs
+
+# Science daily two rss feeds just in case one fails
+https://www.sciencedaily.com/rss/top/health.xml
+https://www.sciencedaily.com/rss/health_medicine.xml
+
+# chatgpt advice
+🧠 Pro Insight (important for you)
+From experience building aggregators:
+Combine 3 types:
+Publisher feeds → BBC, Guardian
+Wire services → Reuters, UPI
+Aggregators → Google News
+
+👉 This gives:
+
+Coverage (no missing stories)
+Diversity (less bias)
+Freshness (real-time updates)
+
+  { name: "TechCrunch Startups", url: "https://techcrunch.com/tag/startups/feed/" },
+  { name: "VentureBeat", url: "https://venturebeat.com/feed/" },
+
+  Science: [
+    "nasa",
+    "space",
+    "research",
+    "climate",
+    "environment",
+    "study",
+    "scientist",
+    "discovery",
+  ],
 
 -->
