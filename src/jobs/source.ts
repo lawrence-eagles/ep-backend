@@ -15,16 +15,37 @@ export function normalizeFeedUrl(raw: string): string {
   try {
     const u = new URL(raw.trim());
 
-    // enforce https
-    u.protocol = "https:";
+    // normalize hostname
+    u.hostname = u.hostname.toLowerCase();
+
+    // enforce https (safe upgrade)
+    if (u.protocol === "http:") {
+      u.protocol = "https:";
+    }
 
     // normalize pathname
     u.pathname = u.pathname
+      .replace(/\/{2,}/g, "/") // collapse duplicate slashes
       .replace(/\/+$/, "") // remove trailing slashes
-      .replace(/\/(feed|rss)\/?$/i, ""); // safe suffix strip
+      .replace(/\/(feed|rss)\/?$/i, ""); // remove feed/rss suffix
 
-    // remove noise
-    u.search = "";
+    const isGoogleNews = u.hostname.endsWith("news.google.com");
+
+    if (isGoogleNews) {
+      // ✅ preserve but normalize query params
+      const params = new URLSearchParams(u.search);
+
+      const sorted = new URLSearchParams(
+        [...params.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      );
+
+      u.search = sorted.toString();
+    } else {
+      // strip noise
+      u.search = "";
+    }
+
+    // always remove hash
     u.hash = "";
 
     return u.toString();

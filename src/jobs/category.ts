@@ -630,15 +630,17 @@ function slugify(text: string): string {
 
 // ── Keyword matching helper (word boundary safe without regex rebuild) ───────
 
-function containsWord(text: string, word: string): boolean {
+function countWordOccurrences(text: string, word: string): number {
   // Simple fast path
-  if (!text.includes(word)) return false;
+  if (!text.includes(word)) return 0;
 
   // Ensure word boundaries manually
   const pattern = new RegExp(
     `\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+    "g",
   );
-  return pattern.test(text);
+  const matches = text.match(pattern);
+  return matches ? matches.length : 0;
 }
 
 // ── Classify text into a category ────────────────────────────────────────────
@@ -653,9 +655,7 @@ function classifyText(text: string): string {
     let score = 0;
 
     for (const word of keywords) {
-      if (containsWord(lower, word)) {
-        score++;
-      }
+      score += countWordOccurrences(lower, word);
     }
 
     if (score > bestScore) {
