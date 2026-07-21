@@ -7,8 +7,8 @@
 5. Research how to implement protected route in better auth both for frontend and backend. ✅
 6. Implement protected routes where needed. ✅
 7. Implement the next 5 routes ✅
-8. Update category keywords
-9. Update RSS feeds
+8. Update category keywords ✅
+9. Update RSS feeds ✅
 10. Add route that allows users to share (recommend) app ✅
 11. Add route that allows users to rate app
 12. Add push notification for mobile ✅
