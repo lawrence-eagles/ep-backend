@@ -655,7 +655,7 @@ function classifyText(text: string): string {
     let score = 0;
 
     for (const word of keywords) {
-      score += countWordOccurrences(lower, word);
+      score += countWordOccurrences(lower, word.toLowerCase());
     }
 
     if (score > bestScore) {
