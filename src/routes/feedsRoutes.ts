@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { authUser } from "../middleware/authUser";
 import { forYouFeedVerisonOne } from "../controllers/feeds/feedsController";
-import { followsHeadlineVersionOne } from "../controllers/feeds/followsHeadlinesController";
+import { followingVersionOne } from "../controllers/feeds/followingController";
 import { trendingFeedVersionOne } from "../controllers/feeds/trendingsController";
 import { singlePostControllerVersionOne } from "../controllers/singlePostController";
 
@@ -9,7 +9,7 @@ const router = Router();
 router.use(authUser);
 
 router.get("/", forYouFeedVerisonOne);
-router.get("/headlines", followsHeadlineVersionOne);
+router.get("/following", followingVersionOne);
 router.get("/trending", trendingFeedVersionOne);
 router.get("/:slug", singlePostControllerVersionOne);
 

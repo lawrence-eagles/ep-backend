@@ -331,9 +331,6 @@ Coverage (no missing stories)
 Diversity (less bias)
 Freshness (real-time updates)
 
-  { name: "TechCrunch Startups", url: "https://techcrunch.com/tag/startups/feed/" },
-  { name: "VentureBeat", url: "https://venturebeat.com/feed/" },
-
   Science: [
     "nasa",
     "space",
@@ -345,4 +342,8 @@ Freshness (real-time updates)
     "discovery",
   ],
 
+
+in the image i uploaded upscale the hero-image illustration, make it a transparent background.
+
+General, Technology, Business, Politics, Health, World, Crypto
 -->
