@@ -91,10 +91,7 @@ interface FollowingRow {
 // =========================
 // 🚀 CONTROLLER
 // =========================
-export const followsHeadlineVersionOne = async (
-  req: Request,
-  res: Response,
-) => {
+export const followingVersionOne = async (req: Request, res: Response) => {
   try {
     // =========================
     // 1. AUTH

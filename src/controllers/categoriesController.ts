@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { Request, Response } from "express";
 import { db } from "../db";
 
+// This query returns all categories, and for each category it adds an isFollowing flag indicating whether the logged-in user follows it.
 export const categoryVersionOne = async (req: Request, res: Response) => {
   // =========================
   // 1. VALIDATION
