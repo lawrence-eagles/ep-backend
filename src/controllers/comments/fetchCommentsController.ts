@@ -45,7 +45,6 @@ async function rateLimit(userId: string, keySuffix: string) {
     }
   } catch (err) {
     console.error("RATE LIMIT ERROR:", err);
-    // fail open only for Redis failures
     return;
   }
 
@@ -114,33 +113,19 @@ function decodeCursor(cursor: string): Cursor {
 export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
   try {
     const redis = await getRedisSafe();
+    const userId = req.user?.id ?? null;
 
-    // =========================
-    // AUTH (optional but recommended)
-    // =========================
-    const userId = req.user?.id ?? "anon";
-
-    // =========================
-    // RATE LIMIT (FIXED)
-    // =========================
-    await rateLimit(userId, "fetch_comments");
+    await rateLimit(userId ?? "anon", "fetch_comments");
 
     const { cursor } = req.query;
 
-    // =========================
-    // PARAM VALIDATION
-    // =========================
     let { postId } = req.params;
-
     if (Array.isArray(postId)) postId = postId[0];
 
     if (!postId || !UUID_RE.test(postId)) {
       return res.status(400).json({ error: "Invalid postId" });
     }
 
-    // =========================
-    // CURSOR
-    // =========================
     let decodedCursor: Cursor | null = null;
 
     if (cursor) {
@@ -151,83 +136,63 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       }
     }
 
-    // =========================
-    // CACHE GET
-    // =========================
     const cacheKey = await buildCommentsKey(
       postId,
       cursor ? (cursor as string) : null,
+      userId, // 🔥 important: user-specific because of isLiked
     );
 
     if (redis) {
       try {
         const cached = await redis.get(cacheKey);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-
-            // 🔥 STRICT SHAPE VALIDATION
-            if (
-              !parsed ||
-              typeof parsed !== "object" ||
-              !Array.isArray((parsed as any).comments) ||
-              typeof (parsed as any).hasMore !== "boolean" ||
-              ("nextCursor" in parsed &&
-                parsed.nextCursor !== null &&
-                typeof parsed.nextCursor !== "string")
-            ) {
-              throw new Error("Invalid cache shape");
-            }
-
-            if (
-              (parsed as any).hasMore &&
-              (parsed as any).nextCursor === null
-            ) {
-              throw new Error("Invalid cache shape");
-            }
-
-            if ((parsed as any).nextCursor !== null) {
-              decodeCursor((parsed as any).nextCursor);
-            }
-
-            return res.json(parsed);
-          } catch (err) {
-            console.warn("Corrupted cache:", cacheKey);
-
-            try {
-              await redis.del(cacheKey);
-            } catch (delErr) {
-              console.error("REDIS DEL ERROR:", delErr);
-            }
-          }
-        }
+        if (cached) return res.json(JSON.parse(cached));
       } catch (err) {
         console.error("REDIS GET ERROR:", err);
       }
     }
 
     // =========================
-    // FETCH TOP-LEVEL COMMENTS
+    // FETCH COMMENTS + likes
     // =========================
     const commentsQuery = decodedCursor
       ? sql`
-        SELECT id, created_at, content, user_id
-        FROM comments
-        WHERE post_id = ${postId}
-          AND parent_id IS NULL
-          AND (created_at, id) < (
+        SELECT 
+          c.id,
+          c.created_at,
+          c.content,
+          c.user_id,
+          c.likes_count,
+          EXISTS (
+            SELECT 1 FROM comment_likes cl
+            WHERE cl.comment_id = c.id
+            ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+          ) AS is_liked
+        FROM comments c
+        WHERE c.post_id = ${postId}
+          AND c.parent_id IS NULL
+          AND (c.created_at, c.id) < (
             ${decodedCursor.created_at}::timestamp,
             ${decodedCursor.id}::uuid
           )
-        ORDER BY created_at DESC, id DESC
+        ORDER BY c.created_at DESC, c.id DESC
         LIMIT ${PAGE_SIZE + 1}
       `
       : sql`
-        SELECT id, created_at, content, user_id
-        FROM comments
-        WHERE post_id = ${postId}
-          AND parent_id IS NULL
-        ORDER BY created_at DESC, id DESC
+        SELECT 
+          c.id,
+          c.created_at,
+          c.content,
+          c.user_id,
+          c.likes_count,
+          EXISTS (
+            SELECT 1 FROM comment_likes cl
+            WHERE cl.comment_id = c.id
+            ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+          ) AS is_liked
+        FROM comments c
+        WHERE c.post_id = ${postId}
+          AND c.parent_id IS NULL
+        ORDER BY c.created_at DESC, c.id DESC
         LIMIT ${PAGE_SIZE + 1}
       `;
 
@@ -235,12 +200,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
 
     const hasMore = result.rows.length > PAGE_SIZE;
 
-    const comments = result.rows.slice(0, PAGE_SIZE) as Array<{
-      id: string;
-      created_at: Date;
-      content: string;
-      user_id: string;
-    }>;
+    const comments = result.rows.slice(0, PAGE_SIZE) as any[];
 
     if (comments.length === 0) {
       return res.json({ comments: [], nextCursor: null, hasMore: false });
@@ -249,7 +209,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const ids = comments.map((c) => c.id);
 
     // =========================
-    // FETCH REPLIES (FIXED)
+    // FETCH REPLIES + likes
     // =========================
     const repliesResult = await db.execute(sql`
       SELECT
@@ -257,10 +217,16 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         r.id AS reply_id,
         r.created_at AS reply_created_at,
         r.content AS reply_content,
-        r.user_id AS reply_user_id
+        r.user_id AS reply_user_id,
+        r.likes_count AS reply_likes_count,
+        EXISTS (
+          SELECT 1 FROM comment_likes cl
+          WHERE cl.comment_id = r.id
+          ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+        ) AS reply_is_liked
       FROM comments c
       LEFT JOIN LATERAL (
-        SELECT id, created_at, content, user_id
+        SELECT id, created_at, content, user_id, likes_count
         FROM comments r
         WHERE r.parent_id = c.id
         ORDER BY r.created_at ASC, r.id ASC
@@ -272,22 +238,13 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       )})
     `);
 
-    const replyMap = new Map<
-      string,
-      {
-        replies: any[];
-        hasMore: boolean;
-      }
-    >();
+    const replyMap = new Map<string, { replies: any[]; hasMore: boolean }>();
 
     for (const row of repliesResult.rows as any[]) {
       const parentId = row.parent_id;
 
       if (!replyMap.has(parentId)) {
-        replyMap.set(parentId, {
-          replies: [],
-          hasMore: false,
-        });
+        replyMap.set(parentId, { replies: [], hasMore: false });
       }
 
       if (!row.reply_id) continue;
@@ -299,6 +256,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         created_at: row.reply_created_at,
         content: row.reply_content,
         user_id: row.reply_user_id,
+        likesCount: row.reply_likes_count,
+        isLiked: row.reply_is_liked,
       });
 
       if (data.replies.length > REPLIES_PAGE_SIZE) {
@@ -312,11 +271,15 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     // =========================
     const enriched = comments.map((c) => {
       const r = replyMap.get(c.id);
-
       const replies = r?.replies ?? [];
 
       return {
-        ...c,
+        id: c.id,
+        created_at: c.created_at,
+        content: c.content,
+        user_id: c.user_id,
+        likesCount: c.likes_count,
+        isLiked: c.is_liked,
         replies,
         repliesNextCursor:
           r?.hasMore && replies.length > 0
@@ -331,9 +294,6 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       };
     });
 
-    // =========================
-    // NEXT CURSOR
-    // =========================
     const last = comments[comments.length - 1];
 
     const nextCursor = hasMore
@@ -349,9 +309,6 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       hasMore,
     };
 
-    // =========================
-    // CACHE SET
-    // =========================
     if (redis) {
       try {
         await redis.set(cacheKey, JSON.stringify(response), {

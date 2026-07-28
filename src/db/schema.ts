@@ -275,6 +275,33 @@ export const likes = pgTable(
 );
 
 // =========================
+// COMMENTS LIKE TABLE
+// =========================
+export const commentLikes = pgTable(
+  "comment_likes",
+  {
+    id: uuidV7PrimaryKey(),
+
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    commentId: uuid("comment_id")
+      .notNull()
+      .references(() => comments.id, { onDelete: "cascade" }),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_comment_likes_comment_id").on(t.commentId),
+    index("idx_comment_likes_user_id").on(t.userId),
+
+    // 🚨 prevents duplicate likes
+    uniqueIndex("uniq_comment_like").on(t.userId, t.commentId),
+  ],
+);
+
+// =========================
 // ❤️ SHARES TABLE
 // =========================
 export const shares = pgTable(
@@ -353,6 +380,7 @@ export const comments = pgTable(
       .references(() => posts.id, {
         onDelete: "cascade",
       }),
+    likesCount: integer("likes_count").default(0).notNull(),
 
     // 🔥 FIX: break circular inference
     // 👉 This explicitly tells TypeScript: "Don’t try to infer this — it returns a column"
@@ -567,6 +595,7 @@ export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
   likes: many(likes),
+  commentLikes: many(commentLikes),
   shares: many(shares),
   bookmarks: many(bookmarks),
   comments: many(comments),
@@ -625,6 +654,19 @@ export const likesRelations = relations(likes, ({ one }) => ({
   }),
 }));
 
+// commentLikes Relations
+export const commentLikesRelations = relations(commentLikes, ({ one }) => ({
+  user: one(user, {
+    fields: [commentLikes.userId],
+    references: [user.id],
+  }),
+
+  comment: one(comments, {
+    fields: [commentLikes.commentId],
+    references: [comments.id],
+  }),
+}));
+
 // Shares Relations
 export const sharesRelations = relations(shares, ({ one }) => ({
   user: one(user, {
@@ -653,9 +695,14 @@ export const commentsRelations = relations(comments, ({ one, many }) => ({
   parent: one(comments, {
     fields: [comments.parentId],
     references: [comments.id],
+    relationName: "comment_replies",
   }),
 
-  replies: many(comments),
+  replies: many(comments, {
+    relationName: "comment_replies",
+  }),
+
+  commentLikes: many(commentLikes),
 }));
 
 // Bookmark Relations

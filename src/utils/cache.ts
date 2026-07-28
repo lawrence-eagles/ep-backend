@@ -175,10 +175,18 @@ export async function buildFollowingKey(
 export async function buildCommentsKey(
   postId: string,
   cursor: string | null,
+  userId: string | null,
 ): Promise<string> {
+  // 🔒 Normalize user scope (VERY IMPORTANT for caching correctness)
+  const userScope = userId ?? "anon";
+
+  // 🔥 Versioned cache (supports invalidation)
   const version = await getVersion(`comments:${postId}:version`);
 
-  return cursor
-    ? `comments:${postId}:v${version}:c:${cursor}`
-    : `comments:${postId}:v${version}:start`;
+  // 🔑 Build key
+  if (cursor) {
+    return `comments:${postId}:v${version}:u:${userScope}:c:${cursor}`;
+  }
+
+  return `comments:${postId}:v${version}:u:${userScope}:start`;
 }
