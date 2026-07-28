@@ -21,6 +21,9 @@ async function getRedisSafe() {
 export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
   const { commentId } = req.params;
 
+  const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
   // =========================
   // 1. VALIDATION
   // =========================
@@ -32,6 +35,10 @@ export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
     return res.status(400).json({
       error: "Missing commentId",
     });
+  }
+
+  if (typeof commentId !== "string" || !UUID_RE.test(commentId)) {
+    return res.status(400).json({ error: "Invalid commentId" });
   }
 
   const userId = req.user.id;
@@ -73,7 +80,7 @@ export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
       slug = row.slug;
       categoryId = row.category_id;
 
-      // 🔥 Delete like
+      // 🔥 Delete like (trigger will handle counters)
       const deleteResult = await tx.execute(sql`
         DELETE FROM comment_likes
         WHERE user_id = ${userId}
@@ -85,21 +92,7 @@ export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
 
       if (!isRemoved) return;
 
-      // 🔥 Decrement comment likes safely
-      await tx.execute(sql`
-        UPDATE comments
-        SET likes_count = GREATEST(likes_count - 1, 0)
-        WHERE id = ${commentId}
-      `);
-
-      // 🔥 Adjust post score (mirror like logic)
-      await tx.execute(sql`
-        UPDATE posts
-        SET score = GREATEST(score - 2, 0)
-        WHERE id = ${postId}
-      `);
-
-      // 🔥 Adjust user behavior
+      // 🔥 Adjust user behavior (still needed)
       if (categoryId) {
         await tx.execute(sql`
           UPDATE user_behavior

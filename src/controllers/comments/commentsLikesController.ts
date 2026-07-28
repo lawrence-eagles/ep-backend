@@ -21,6 +21,9 @@ async function getRedisSafe() {
 export const likeCommentVersionOne = async (req: Request, res: Response) => {
   const { commentId } = req.body;
 
+  const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
   // =========================
   // 1. VALIDATION
   // =========================
@@ -32,6 +35,10 @@ export const likeCommentVersionOne = async (req: Request, res: Response) => {
     return res.status(400).json({
       error: "Missing commentId",
     });
+  }
+
+  if (!UUID_RE.test(commentId)) {
+    return res.status(400).json({ error: "Invalid commentId" });
   }
 
   const userId = req.user.id;

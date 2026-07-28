@@ -115,7 +115,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const redis = await getRedisSafe();
     const userId = req.user?.id ?? null;
 
-    await rateLimit(userId ?? "anon", "fetch_comments");
+    await rateLimit(userId ?? `ip:${req.ip}`, "fetch_comments");
 
     const { cursor } = req.query;
 
@@ -165,7 +165,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
           EXISTS (
             SELECT 1 FROM comment_likes cl
             WHERE cl.comment_id = c.id
-            ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+            ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
           ) AS is_liked
         FROM comments c
         WHERE c.post_id = ${postId}
@@ -187,7 +187,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
           EXISTS (
             SELECT 1 FROM comment_likes cl
             WHERE cl.comment_id = c.id
-            ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+            ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
           ) AS is_liked
         FROM comments c
         WHERE c.post_id = ${postId}
@@ -222,7 +222,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         EXISTS (
           SELECT 1 FROM comment_likes cl
           WHERE cl.comment_id = r.id
-          ${userId ? sql`AND cl.user_id = ${userId}` : sql``}
+          ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
         ) AS reply_is_liked
       FROM comments c
       LEFT JOIN LATERAL (
