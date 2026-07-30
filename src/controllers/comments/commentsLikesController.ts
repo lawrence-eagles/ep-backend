@@ -37,7 +37,7 @@ export const likeCommentVersionOne = async (req: Request, res: Response) => {
     });
   }
 
-  if (!UUID_RE.test(commentId)) {
+  if (typeof commentId !== "string" || !UUID_RE.test(commentId)) {
     return res.status(400).json({ error: "Invalid commentId" });
   }
 
@@ -80,10 +80,12 @@ export const likeCommentVersionOne = async (req: Request, res: Response) => {
       slug = row.slug;
       categoryId = row.category_id;
 
-      // 🔥 Insert like (prevent duplicate)
+      // 🔥 Insert like WITH post_id (safe + deduplicated)
       const likeResult = await tx.execute(sql`
-        INSERT INTO comment_likes (user_id, comment_id)
-        VALUES (${userId}, ${commentId})
+        INSERT INTO comment_likes (user_id, comment_id, post_id)
+        SELECT ${userId}, c.id, c.post_id
+        FROM comments c
+        WHERE c.id = ${commentId}
         ON CONFLICT (user_id, comment_id) DO NOTHING
         RETURNING 1
       `);
@@ -92,21 +94,21 @@ export const likeCommentVersionOne = async (req: Request, res: Response) => {
 
       if (!isNewLike) return;
 
-      // 🔥 Increment comment likes
+      // 🔥 Increment comment likes (still needed unless you add INSERT trigger)
       await tx.execute(sql`
         UPDATE comments
         SET likes_count = likes_count + 1
         WHERE id = ${commentId}
       `);
 
-      // 🔥 Optional: boost post score (same logic as post likes)
+      // 🔥 Boost post score
       await tx.execute(sql`
         UPDATE posts
         SET score = score + 2
         WHERE id = ${postId}
       `);
 
-      // 🔥 Optional: user behavior (weaker than post like)
+      // 🔥 User behavior update
       if (categoryId) {
         await tx.execute(sql`
           INSERT INTO user_behavior (user_id, category_id, score)
