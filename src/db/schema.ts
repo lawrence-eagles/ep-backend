@@ -15,6 +15,7 @@ import {
   primaryKey,
   AnyPgColumn,
   pgEnum,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import {
   relations,
@@ -286,24 +287,35 @@ export const commentLikes = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
 
-    commentId: uuid("comment_id")
-      .notNull()
-      .references(() => comments.id, { onDelete: "cascade" }),
+    commentId: uuid("comment_id").notNull(),
 
-    postId: uuid("post_id")
-      .notNull()
-      .references(() => posts.id, { onDelete: "cascade" }),
+    postId: uuid("post_id").notNull(),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
+    // =========================
+    // 🔥 COMPOSITE FOREIGN KEY (CRITICAL FIX)
+    // =========================
+    foreignKey({
+      name: "fk_comment_likes_comment_post",
+      columns: [t.commentId, t.postId],
+      foreignColumns: [comments.id, comments.postId],
+    }).onDelete("cascade"),
+
+    // =========================
+    // INDEXES
+    // =========================
     index("idx_comment_likes_comment_id").on(t.commentId),
     index("idx_comment_likes_user_id").on(t.userId),
     index("idx_comment_likes_post_id").on(t.postId),
 
-    // ✅ ADD THIS (composite index)
+    // 🔥 Composite index (performance)
     index("idx_comment_likes_user_post").on(t.userId, t.postId),
 
+    // =========================
+    // UNIQUE CONSTRAINT
+    // =========================
     uniqueIndex("uniq_comment_like").on(t.userId, t.commentId),
   ],
 );
@@ -402,6 +414,7 @@ export const comments = pgTable(
     index("idx_comments_parent_id").on(t.parentId),
     index("idx_comments_post_created").on(t.postId, t.createdAt),
     index("idx_comments_user_id").on(t.userId),
+    uniqueIndex("uniq_comment_post").on(t.id, t.postId), // i added because of the commentLikes table
   ],
 );
 
