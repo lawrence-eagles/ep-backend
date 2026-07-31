@@ -350,6 +350,4 @@ General, Technology, Business, Politics, Health, World, Crypto
 rm -rf drizzle
 npx drizzle-kit generate --name=init
 npx drizzle-kit migrate
-
-consider removing the comment like feature
 -->
