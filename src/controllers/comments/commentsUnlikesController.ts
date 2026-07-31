@@ -32,11 +32,6 @@ export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
 
   const { commentId } = parsed.data;
 
-  // const { commentId } = req.params;
-
-  // const UUID_RE =
-  //   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
   // =========================
   // 1. VALIDATION
   // =========================
@@ -49,10 +44,6 @@ export const unlikeCommentVersionOne = async (req: Request, res: Response) => {
       error: "Missing commentId",
     });
   }
-
-  // if (typeof commentId !== "string" || !UUID_RE.test(commentId)) {
-  //   return res.status(400).json({ error: "Invalid commentId" });
-  // }
 
   const userId = req.user.id;
 
