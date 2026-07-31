@@ -346,4 +346,8 @@ Freshness (real-time updates)
 in the image i uploaded upscale the hero-image illustration, make it a transparent background.
 
 General, Technology, Business, Politics, Health, World, Crypto
+
+rm -rf drizzle
+npx drizzle-kit generate --name=init
+npx drizzle-kit migrate
 -->
