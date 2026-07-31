@@ -290,7 +290,6 @@ export const commentLikes = pgTable(
       .notNull()
       .references(() => comments.id, { onDelete: "cascade" }),
 
-    // ✅ ADD THIS
     postId: uuid("post_id")
       .notNull()
       .references(() => posts.id, { onDelete: "cascade" }),
@@ -300,7 +299,10 @@ export const commentLikes = pgTable(
   (t) => [
     index("idx_comment_likes_comment_id").on(t.commentId),
     index("idx_comment_likes_user_id").on(t.userId),
-    index("idx_comment_likes_post_id").on(t.postId), // ✅ add index
+    index("idx_comment_likes_post_id").on(t.postId),
+
+    // ✅ ADD THIS (composite index)
+    index("idx_comment_likes_user_post").on(t.userId, t.postId),
 
     uniqueIndex("uniq_comment_like").on(t.userId, t.commentId),
   ],

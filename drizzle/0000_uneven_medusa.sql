@@ -248,18 +248,20 @@ CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("ident
 -- =========================================
 -- MY ADDITION BEGIN
 -- =========================================
+
 -- =========================================
--- 1. CREATE / REPLACE FUNCTION
+-- 1. HANDLE COMMENT LIKE DELETE
+-- (single source of truth for decrements)
 -- =========================================
 CREATE OR REPLACE FUNCTION handle_comment_like_delete()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- 🔥 Decrement comment likes_count (safe even if comment already deleted)
+  -- 🔥 Decrement comment likes_count (safe if comment already gone)
   UPDATE comments
   SET likes_count = GREATEST(likes_count - 1, 0)
   WHERE id = OLD.comment_id;
 
-  -- 🔥 Decrement post score using stored post_id (NO JOIN)
+  -- 🔥 Decrement post score using stored post_id (NO JOIN = fast & safe)
   UPDATE posts
   SET score = GREATEST(score - 2, 0)
   WHERE id = OLD.post_id;
@@ -268,16 +270,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-
--- =========================================
--- 2. ATTACH TRIGGER
--- =========================================
-DROP TRIGGER IF EXISTS trg_comment_like_delete ON comment_likes;
-
 CREATE TRIGGER trg_comment_like_delete
 AFTER DELETE ON comment_likes
 FOR EACH ROW
 EXECUTE FUNCTION handle_comment_like_delete();
+
+
+-- =========================================
+-- 2. HANDLE USER DELETE (bulk safety layer)
+-- =========================================
+
+
 -- =========================================
 -- MY ADDITION ENDS
 -- =========================================
