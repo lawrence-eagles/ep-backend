@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { Request, Response } from "express";
 import { db } from "../../db";
 import { getRedis } from "../../lib/redis";
+import { z } from "zod";
 
 // =========================
 // 🔥 SAFE REDIS HELPER
@@ -19,10 +20,22 @@ async function getRedisSafe() {
 // 👍 LIKE COMMENT / REPLY
 // =========================
 export const likeCommentVersionOne = async (req: Request, res: Response) => {
-  const { commentId } = req.body;
+  const LikeCommentSchema = z.object({
+    commentId: z.uuid(),
+  });
 
-  const UUID_RE =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const parsed = LikeCommentSchema.safeParse(req.body);
+
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid commentId" });
+  }
+
+  const { commentId } = parsed.data;
+
+  // const { commentId } = req.body;
+
+  // const UUID_RE =
+  //   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   // =========================
   // 1. VALIDATION
@@ -37,9 +50,9 @@ export const likeCommentVersionOne = async (req: Request, res: Response) => {
     });
   }
 
-  if (typeof commentId !== "string" || !UUID_RE.test(commentId)) {
-    return res.status(400).json({ error: "Invalid commentId" });
-  }
+  // if (typeof commentId !== "string" || !UUID_RE.test(commentId)) {
+  //   return res.status(400).json({ error: "Invalid commentId" });
+  // }
 
   const userId = req.user.id;
 
