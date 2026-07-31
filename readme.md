@@ -395,3 +395,7 @@ git pull
    npx drizzle-kit migrate
 
 8. Production --- Run migrations in deploy pipeline ONLY
+
+<!--
+Never rebase commits that you have already pushed to a shared, public repository (like GitHub or GitLab). Because rebasing rewrites history, it will break the repository for other developers who have already downloaded those commits.
+ -->
