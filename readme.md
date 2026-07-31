@@ -350,4 +350,48 @@ General, Technology, Business, Politics, Health, World, Crypto
 rm -rf drizzle
 npx drizzle-kit generate --name=init
 npx drizzle-kit migrate
+
+# after editing migration
+npx drizzle-kit generate --dry-run
+# there should be no output, If it outputs SQL unexpectedly → something is off
+# 👉 If Drizzle still wants to generate something: Your schema.ts and SQL are out of sync
+
+
+🔥 Pro tip (this will save you again later)
+Whenever you see:
+FOREIGN KEY (a, b) REFERENCES table(x, y)
+👉 Immediately check:
+Is (x, y) already PRIMARY KEY or UNIQUE before this line?
 -->
+
+# Git workflow
+
+1. Sync branch with latest master
+
+```bash
+git checkout master
+git pull
+git checkout feature/comment-likes
+git rebase master
+```
+
+2. Generate migration
+
+```bash
+npx drizzle-kit generate --name add_comment_likes
+```
+
+3. Commit + PR
+4. Fix all issues (including migration SQL)
+5. Merge to master
+6. Pull latest
+
+```bash
+git checkout master
+git pull
+```
+
+7. Apply migrations locally (optional, for dev DB)
+   npx drizzle-kit migrate
+
+8. Production --- Run migrations in deploy pipeline ONLY
