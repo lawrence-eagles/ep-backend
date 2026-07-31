@@ -247,6 +247,7 @@ CREATE INDEX "idx_user_behavior_user_category" ON "user_behavior" USING btree ("
 CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("identifier");
 
 
+
 -- =========================================
 -- MY ADDITION BEGIN
 -- =========================================
