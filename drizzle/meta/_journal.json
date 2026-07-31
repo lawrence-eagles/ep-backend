@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1785503495444,
+      "tag": "0000_lyrical_zodiak",
+      "breakpoints": true
+    }
+  ]
+}
