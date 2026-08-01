@@ -181,6 +181,8 @@ CREATE TABLE "verification" (
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
+--> added here
+CREATE UNIQUE INDEX "uniq_comment_post" ON "comments" USING btree ("id","post_id");--> statement-breakpoint
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bookmarks" ADD CONSTRAINT "bookmarks_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -221,7 +223,7 @@ CREATE INDEX "idx_comments_post_id" ON "comments" USING btree ("post_id");--> st
 CREATE INDEX "idx_comments_parent_id" ON "comments" USING btree ("parent_id");--> statement-breakpoint
 CREATE INDEX "idx_comments_post_created" ON "comments" USING btree ("post_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_comments_user_id" ON "comments" USING btree ("user_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_comment_post" ON "comments" USING btree ("id","post_id");--> statement-breakpoint
+-- removed from here
 CREATE INDEX "idx_device_tokens_last_seen" ON "device_tokens" USING btree ("last_seen_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_feed_alias_url" ON "feed_aliases" USING btree ("alias_url");--> statement-breakpoint
 CREATE INDEX "idx_feed_alias_source" ON "feed_aliases" USING btree ("source_id");--> statement-breakpoint
