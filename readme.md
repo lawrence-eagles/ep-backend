@@ -404,6 +404,8 @@ Never rebase commits that you have already pushed to a shared, public repository
 
 # Must do after npx drizzle-kit generate
 
+1.
+
 ```sql
 -- this must be above
 CREATE UNIQUE INDEX "uniq_comment_post" ON "comments" USING btree ("id","post_id");
@@ -415,3 +417,5 @@ and
 -- this must be below
 ALTER TABLE "comment_likes" ADD CONSTRAINT "fk_comment_likes_comment_post" FOREIGN KEY ("comment_id","post_id") REFERENCES "public"."comments"("id","post_id") ON DELETE cascade ON UPDATE no action;
 ```
+
+2. For the first migration add the DB trigger
