@@ -346,4 +346,72 @@ Freshness (real-time updates)
 in the image i uploaded upscale the hero-image illustration, make it a transparent background.
 
 General, Technology, Business, Politics, Health, World, Crypto
+
+rm -rf drizzle
+npx drizzle-kit generate --name=init
+npx drizzle-kit migrate
 -->
+
+# after editing migration
+
+npx drizzle-kit check
+
+# there should be no output, If it outputs SQL unexpectedly → something is off
+
+# 👉 If Drizzle still wants to generate something: Your schema.ts and SQL are out of sync
+
+🔥 Pro tip (this will save you again later)
+Whenever you see:
+FOREIGN KEY (a, b) REFERENCES table(x, y)
+👉 Immediately check:
+Is (x, y) already PRIMARY KEY or UNIQUE before this line?
+
+# Git workflow
+
+1. Sync branch with latest master
+
+```bash
+git checkout master
+git pull
+git checkout feature/comment-likes
+git rebase master
+```
+
+2. Generate migration
+
+```bash
+npx drizzle-kit generate --name add_comment_likes
+```
+
+3. Commit + PR
+4. Fix all issues (including migration SQL)
+5. Merge to master
+6. Pull latest
+
+```bash
+git checkout master
+git pull
+```
+
+7. Apply migrations locally (optional, for dev DB)
+   npx drizzle-kit migrate
+
+8. Production --- Run migrations in deploy pipeline ONLY
+
+# Note for running rebase
+
+Never rebase commits that you have already pushed to a shared, public repository (like GitHub or GitLab). Because rebasing rewrites history, it will break the repository for other developers who have already downloaded those commits.
+
+# Must do after npx drizzle-kit generate
+
+```sql
+-- this must be above
+CREATE UNIQUE INDEX "uniq_comment_post" ON "comments" USING btree ("id","post_id");
+```
+
+and
+
+```sql
+-- this must be below
+ALTER TABLE "comment_likes" ADD CONSTRAINT "fk_comment_likes_comment_post" FOREIGN KEY ("comment_id","post_id") REFERENCES "public"."comments"("id","post_id") ON DELETE cascade ON UPDATE no action;
+```
