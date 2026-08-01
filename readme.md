@@ -350,19 +350,21 @@ General, Technology, Business, Politics, Health, World, Crypto
 rm -rf drizzle
 npx drizzle-kit generate --name=init
 npx drizzle-kit migrate
+-->
 
 # after editing migration
-npx drizzle-kit generate --dry-run
-# there should be no output, If it outputs SQL unexpectedly → something is off
-# 👉 If Drizzle still wants to generate something: Your schema.ts and SQL are out of sync
 
+npx drizzle-kit check
+
+# there should be no output, If it outputs SQL unexpectedly → something is off
+
+# 👉 If Drizzle still wants to generate something: Your schema.ts and SQL are out of sync
 
 🔥 Pro tip (this will save you again later)
 Whenever you see:
 FOREIGN KEY (a, b) REFERENCES table(x, y)
 👉 Immediately check:
 Is (x, y) already PRIMARY KEY or UNIQUE before this line?
--->
 
 # Git workflow
 
@@ -396,6 +398,6 @@ git pull
 
 8. Production --- Run migrations in deploy pipeline ONLY
 
-<!--
+# Note for running rebase
+
 Never rebase commits that you have already pushed to a shared, public repository (like GitHub or GitLab). Because rebasing rewrites history, it will break the repository for other developers who have already downloaded those commits.
- -->
