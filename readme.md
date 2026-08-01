@@ -418,4 +418,4 @@ and
 ALTER TABLE "comment_likes" ADD CONSTRAINT "fk_comment_likes_comment_post" FOREIGN KEY ("comment_id","post_id") REFERENCES "public"."comments"("id","post_id") ON DELETE cascade ON UPDATE no action;
 ```
 
-2. For the first migration add the DB trigger
+2. For the first migration add the DB trigger is then saved in the DB so no need to add the trigger in other migration.
