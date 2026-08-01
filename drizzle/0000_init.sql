@@ -181,8 +181,10 @@ CREATE TABLE "verification" (
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
---> added here
+
+-- i added here
 CREATE UNIQUE INDEX "uniq_comment_post" ON "comments" USING btree ("id","post_id");--> statement-breakpoint
+
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bookmarks" ADD CONSTRAINT "bookmarks_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -223,7 +225,7 @@ CREATE INDEX "idx_comments_post_id" ON "comments" USING btree ("post_id");--> st
 CREATE INDEX "idx_comments_parent_id" ON "comments" USING btree ("parent_id");--> statement-breakpoint
 CREATE INDEX "idx_comments_post_created" ON "comments" USING btree ("post_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_comments_user_id" ON "comments" USING btree ("user_id");--> statement-breakpoint
--- removed from here
+-- i removed from here
 CREATE INDEX "idx_device_tokens_last_seen" ON "device_tokens" USING btree ("last_seen_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_feed_alias_url" ON "feed_aliases" USING btree ("alias_url");--> statement-breakpoint
 CREATE INDEX "idx_feed_alias_source" ON "feed_aliases" USING btree ("source_id");--> statement-breakpoint
@@ -247,3 +249,38 @@ CREATE INDEX "idx_shares_user_id" ON "shares" USING btree ("user_id");--> statem
 CREATE INDEX "idx_user_behavior_category_user" ON "user_behavior" USING btree ("category_id","user_id");--> statement-breakpoint
 CREATE INDEX "idx_user_behavior_user_category" ON "user_behavior" USING btree ("user_id","category_id");--> statement-breakpoint
 CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("identifier");
+
+-- =========================================
+-- MY ADDITION BEGIN
+-- =========================================
+
+-- =========================================
+-- 1. HANDLE COMMENT LIKE DELETE
+-- (single source of truth for decrements)
+-- =========================================
+CREATE OR REPLACE FUNCTION handle_comment_like_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- 🔥 Decrement comment likes_count (safe if comment already gone)
+  UPDATE comments
+  SET likes_count = GREATEST(likes_count - 1, 0)
+  WHERE id = OLD.comment_id;
+
+  -- 🔥 Decrement post score using stored post_id (NO JOIN = fast & safe)
+  UPDATE posts
+  SET score = GREATEST(score - 2, 0)
+  WHERE id = OLD.post_id;
+
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_comment_like_delete
+AFTER DELETE ON comment_likes
+FOR EACH ROW
+EXECUTE FUNCTION handle_comment_like_delete();
+
+
+-- =========================================
+-- MY ADDITION ENDS
+-- =========================================
