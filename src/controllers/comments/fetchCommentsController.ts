@@ -139,7 +139,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const cacheKey = await buildCommentsKey(
       postId,
       cursor ? (cursor as string) : null,
-      userId, // 🔥 important: user-specific because of isLiked
+      userId,
     );
 
     if (redis) {
@@ -152,7 +152,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     }
 
     // =========================
-    // FETCH COMMENTS + likes
+    // FETCH COMMENTS (DESC)
     // =========================
     const commentsQuery = decodedCursor
       ? sql`
@@ -161,6 +161,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
           c.created_at,
           c.content,
           c.user_id,
+          u.image AS user_image,
+          u.name AS user_name,
           c.likes_count,
           EXISTS (
             SELECT 1 FROM comment_likes cl
@@ -168,6 +170,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
             ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
           ) AS is_liked
         FROM comments c
+        JOIN "user" u ON u.id = c.user_id
         WHERE c.post_id = ${postId}
           AND c.parent_id IS NULL
           AND (c.created_at, c.id) < (
@@ -183,6 +186,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
           c.created_at,
           c.content,
           c.user_id,
+          u.image AS user_image,
+          u.name AS user_name,
           c.likes_count,
           EXISTS (
             SELECT 1 FROM comment_likes cl
@@ -190,6 +195,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
             ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
           ) AS is_liked
         FROM comments c
+        JOIN "user" u ON u.id = c.user_id
         WHERE c.post_id = ${postId}
           AND c.parent_id IS NULL
         ORDER BY c.created_at DESC, c.id DESC
@@ -199,7 +205,6 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const result = await db.execute(commentsQuery);
 
     const hasMore = result.rows.length > PAGE_SIZE;
-
     const comments = result.rows.slice(0, PAGE_SIZE) as any[];
 
     if (comments.length === 0) {
@@ -209,7 +214,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     const ids = comments.map((c) => c.id);
 
     // =========================
-    // FETCH REPLIES + likes
+    // FETCH REPLIES (NOW DESC ✅)
     // =========================
     const repliesResult = await db.execute(sql`
       SELECT
@@ -218,6 +223,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         r.created_at AS reply_created_at,
         r.content AS reply_content,
         r.user_id AS reply_user_id,
+        r.user_image AS reply_user_image,
+        r.user_name AS reply_user_name,
         r.likes_count AS reply_likes_count,
         EXISTS (
           SELECT 1 FROM comment_likes cl
@@ -226,10 +233,18 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         ) AS reply_is_liked
       FROM comments c
       LEFT JOIN LATERAL (
-        SELECT id, created_at, content, user_id, likes_count
+        SELECT 
+          r.id, 
+          r.created_at, 
+          r.content, 
+          r.user_id, 
+          u.image AS user_image,
+          u.name AS user_name,
+          r.likes_count
         FROM comments r
+        JOIN "user" u ON u.id = r.user_id
         WHERE r.parent_id = c.id
-        ORDER BY r.created_at ASC, r.id ASC
+        ORDER BY r.created_at DESC, r.id DESC
         LIMIT ${REPLIES_PAGE_SIZE + 1}
       ) r ON TRUE
       WHERE c.id IN (${sql.join(
@@ -256,6 +271,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         created_at: row.reply_created_at,
         content: row.reply_content,
         user_id: row.reply_user_id,
+        userName: row.reply_user_name,
+        userImage: row.reply_user_image,
         likesCount: row.reply_likes_count,
         isLiked: row.reply_is_liked,
       });
@@ -278,6 +295,8 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         created_at: c.created_at,
         content: c.content,
         user_id: c.user_id,
+        userName: c.user_name,
+        userImage: c.user_image,
         likesCount: c.likes_count,
         isLiked: c.is_liked,
         replies,

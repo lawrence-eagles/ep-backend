@@ -500,6 +500,8 @@ export const channelEnum = pgEnum("share_channel", [
   "linkedin",
   "email",
   "copy_link",
+  "post-detail",
+  "profile-detail",
 ]);
 
 export const shareApps = pgTable(
