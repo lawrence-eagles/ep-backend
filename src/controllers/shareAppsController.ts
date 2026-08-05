@@ -28,6 +28,8 @@ const allowedChannels = [
   "linkedin",
   "email",
   "copy_link",
+  "post-detail",
+  "profile-detail",
 ] as const;
 
 const shareSchema = z.object({
