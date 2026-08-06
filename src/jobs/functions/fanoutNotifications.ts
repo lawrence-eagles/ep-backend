@@ -5,7 +5,7 @@ import { getFollowers } from "../../services/followService";
 export const fanoutNotifications: InngestFunction.Any = inngest.createFunction(
   { id: "fanout-notifications", triggers: { event: "article.created" } },
   async ({ event, step }) => {
-    const { categoryId, postId, title, summary } = event.data;
+    const { categoryId, postId, title, summary, slug } = event.data;
 
     await step.run(`fanout-${postId}`, async () => {
       let offset = 0;
@@ -27,6 +27,7 @@ export const fanoutNotifications: InngestFunction.Any = inngest.createFunction(
               id: postId,
               title,
               summary,
+              slug,
             },
           },
         }));

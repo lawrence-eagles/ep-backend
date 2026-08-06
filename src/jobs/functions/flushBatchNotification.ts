@@ -44,20 +44,18 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
 
       if (!results || results.length === 0) return [];
 
-      // ✅ Properly narrow the type
       const firstResult = results[0];
 
       if (Array.isArray(firstResult)) {
         return firstResult as string[];
       }
 
-      // fallback safety
       return [];
     });
 
     if (!items.length) return;
 
-    // ✅ Safe JSON parsing
+    // ✅ Safe JSON parsing (NOW INCLUDING SLUG)
     const articles = items
       .map((i) => {
         try {
@@ -66,13 +64,21 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
           return null;
         }
       })
-      .filter(Boolean) as { id: string; title: string }[];
+      .filter(Boolean) as {
+      id: string;
+      title: string;
+      summary?: string;
+      slug?: string;
+    }[];
 
     if (!articles.length) return;
 
     // 🧠 Step 2: create message
     const title = `${articles.length} new articles`;
     const body = articles[0].title;
+
+    // ✅ Extract primary slug for deep linking
+    const primarySlug = articles[0]?.slug;
 
     // 🧠 Step 3: fetch tokens
     const tokens = await step.run("get-tokens", async () => {
@@ -91,6 +97,10 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
           title,
           body,
           data: {
+            // ✅ REQUIRED FOR DEEP LINKING
+            slug: primarySlug ? String(primarySlug) : "",
+
+            // Optional (keep your existing batch info)
             articleIds: JSON.stringify(articles.map((a) => a.id)),
           },
         });
