@@ -220,7 +220,7 @@ Listen for token refresh
 Update backend when token changes ✅
 
 ✅ BEST PRACTICE LOCATION
-📍 App.tsx or useEffect in root
+📍 App.tsx or useEffect in root should be in the _layout.tsx
 
 import { useEffect } from "react";
 import messaging from "@react-native-firebase/messaging";
