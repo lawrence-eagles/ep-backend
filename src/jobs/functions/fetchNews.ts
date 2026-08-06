@@ -390,6 +390,7 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
                 categoryId,
                 title: article.title,
                 summary: article.summary,
+                slug: inserted.slug,
               },
             });
 
