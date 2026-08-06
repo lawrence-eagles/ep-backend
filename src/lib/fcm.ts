@@ -42,6 +42,13 @@ export async function sendPush(token: string, payload: PushPayload) {
         body: payload.body,
       },
       data: payload.data ?? {},
+      android: {
+        notification: {
+          channelId: "default", // MUST match your app.json + client setup
+          sound: "default",
+          priority: "high",
+        },
+      },
     });
   } catch (err: any) {
     // 🔥 Handle invalid / expired tokens
