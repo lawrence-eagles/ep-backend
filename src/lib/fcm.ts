@@ -43,6 +43,7 @@ export async function sendPush(token: string, payload: PushPayload) {
       },
       data: payload.data ?? {},
       android: {
+        priority: "high",
         notification: {
           channelId: "default", // MUST match your app.json + client setup
           sound: "default",
