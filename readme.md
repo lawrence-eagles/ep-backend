@@ -426,4 +426,4 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 
 ## Version 2
 
-1. include feature to enable users update their account information --- email, password, and name
+1. Add a feature to enable users to update their account information: email, password, and name.

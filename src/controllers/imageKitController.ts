@@ -1,11 +1,13 @@
 import crypto from "crypto";
-import { v4 as uuid } from "uuid";
 import type { Request, Response } from "express";
+import { getEnv } from "../lib/env";
 
-const privateKey = process.env.IMAGEKIT_PRIVATE_KEY!;
+const env = getEnv();
 
-export const generateSignature = (req: Request, res: Response) => {
-  const token = uuid();
+const privateKey = env.IMAGEKIT_PRIVATE_KEY;
+
+export const generateSignature = (_req: Request, res: Response) => {
+  const token = crypto.randomUUID();
   const expire = Math.floor(Date.now() / 1000) + 2400;
 
   const signature = crypto
@@ -13,5 +15,11 @@ export const generateSignature = (req: Request, res: Response) => {
     .update(token + expire)
     .digest("hex");
 
-  res.send({ token, expire, signature });
+  res.setHeader("Cache-Control", "no-store");
+
+  res.json({
+    token,
+    expire,
+    signature,
+  });
 };

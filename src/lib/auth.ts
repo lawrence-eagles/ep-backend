@@ -80,17 +80,9 @@ export const auth = betterAuth({
   user: {
     deleteUser: {
       enabled: true,
-      sendDeleteAccountVerification: async (
-        {
-          user, // The user object
-          url, // The auto-generated URL for deletion
-          token, // The verification token  (can be used to generate custom URL)
-        },
-        request, // The original request object (optional)
-      ) => {
-        // Your email sending logic here
-        // Example: sendEmail(data.user.email, "Verify Deletion", data.url);
-        await resend.emails.send({
+
+      sendDeleteAccountVerification: async ({ user, url, token }, request) => {
+        const { error } = await resend.emails.send({
           from: `Eaglespress <noreply@${env.DOMAIN}>`,
           to: user.email,
           subject: "Verify Account Deletion",
@@ -100,6 +92,12 @@ export const auth = betterAuth({
             token,
           }),
         });
+
+        if (error) {
+          throw new Error(
+            `Failed to send account deletion email: ${error.message}`,
+          );
+        }
       },
     },
   },
