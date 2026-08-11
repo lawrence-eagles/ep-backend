@@ -27,6 +27,7 @@ const envSchema = z.object({
   FCM_PRIVATE_KEY: z.string().min(1),
   RESEND_API_KEY: z.string().min(1),
   DOMAIN: z.string().min(1),
+  IMAGEKIT_PRIVATE_KEY: z.string().min(1),
   //   CLERK_PUBLISHABLE_KEY: z.string().min(1),
   //   CLERK_WEBHOOK_SECRET: z.string().optional(),
   //   POLAR_ACCESS_TOKEN: z.string().optional(),

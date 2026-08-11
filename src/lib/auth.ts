@@ -5,6 +5,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { Resend } from "resend";
 import VerifyEmail from "../emails/verifyEmail";
 import ForgotPasswordEmail from "../emails/forgotPasswordEmail";
+import DeleteAccountEmail from "../emails/DeleteAccountEmail";
 import { db } from "../db"; // your drizzle instance
 import { schema } from "../db/schema"; // the schema exported as const.
 import { getEnv } from "../lib/env";
@@ -76,4 +77,28 @@ export const auth = betterAuth({
     provider: "pg", // or "mysql", "sqlite"
     schema,
   }),
+  user: {
+    deleteUser: {
+      enabled: true,
+
+      sendDeleteAccountVerification: async ({ user, url, token }, request) => {
+        const { error } = await resend.emails.send({
+          from: `Eaglespress <noreply@${env.DOMAIN}>`,
+          to: user.email,
+          subject: "Verify Account Deletion",
+          react: DeleteAccountEmail({
+            userName: user.name,
+            verificationUrl: url,
+            token,
+          }),
+        });
+
+        if (error) {
+          throw new Error(
+            `Failed to send account deletion email: ${error.message}`,
+          );
+        }
+      },
+    },
+  },
 });

@@ -419,3 +419,11 @@ ALTER TABLE "comment_likes" ADD CONSTRAINT "fk_comment_likes_comment_post" FOREI
 ```
 
 2. For the first migration add the DB trigger is then saved in the DB so no need to add the trigger in other migration.
+
+## Firebase
+
+https://console.firebase.google.com?utm_source=chatgpt.com
+
+## Version 2
+
+1. Add a feature to enable users to update their account information: email, password, and name.

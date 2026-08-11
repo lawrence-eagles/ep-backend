@@ -19,6 +19,7 @@ import redirectRoutes from "./routes/redirectRoutes";
 import afterAuthCallback from "./routes/auth-callback";
 import registerDeviceTokenRoute from "./routes/deviceTokenRoutes";
 import singlePostRoutes from "./routes/singlePostRoutes";
+import imageKitRoutes from "./routes/imageKitRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -52,6 +53,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.use("/auth", imageKitRoutes); // ImageKit auth route;
 app.use("/app", appShareRoutes);
 app.use("/api/v1/push", registerDeviceTokenRoute);
 app.use("/api/v1/after-auth", afterAuthCallback); // call this route after better auth login or registration succeeds. Also must pass cookie
