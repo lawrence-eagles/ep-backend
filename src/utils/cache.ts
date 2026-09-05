@@ -190,3 +190,16 @@ export async function buildCommentsKey(
 
   return `comments:${postId}:v${version}:u:${userScope}:start`;
 }
+
+// =========================
+// 🔥 CATEGORY CACHE KEY
+// =========================
+export function buildCategoryFeedKey(
+  userId: string,
+  categoryId: string,
+  cursor: string | null,
+  userVersion: string,
+  categoryVersion: string,
+) {
+  return `feed:v1:category:${userId}:${categoryId}:uv${userVersion}:cv${categoryVersion}:${cursor ?? "first"}`;
+}
