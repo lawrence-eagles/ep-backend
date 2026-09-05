@@ -1,3 +1,4 @@
+import { buildCategoryFeedKey } from "../../utils/cache";
 import type { Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { getRedis } from "../../lib/redis";
@@ -84,19 +85,6 @@ function decodeCursor(raw: string): Cursor {
   }
 
   return result.data;
-}
-
-// =========================
-// 🔥 CACHE KEY
-// =========================
-function buildCategoryFeedKey(
-  userId: string,
-  categoryId: string,
-  cursor: string | null,
-  userVersion: string,
-  categoryVersion: string,
-) {
-  return `feed:v1:category:${userId}:${categoryId}:uv${userVersion}:cv${categoryVersion}:${cursor ?? "first"}`;
 }
 
 // =========================

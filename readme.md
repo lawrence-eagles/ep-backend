@@ -427,3 +427,5 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 ## Version 2
 
 1. Add a feature to enable users to update their account information: email, password, and name.
+
+## how to get google client id and secret for authentication and make it production ready
