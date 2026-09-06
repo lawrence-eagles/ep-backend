@@ -429,3 +429,15 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 1. Add a feature to enable users to update their account information: email, password, and name.
 
 ## how to get google client id and secret for authentication and make it production ready
+
+<!--
+1. create new firebase key, delete old key from pc and google drive, use new key and backup it to google drive ✅
+2. create new neon db and use connection string ✅
+3. delete drizzle folder and generate new migration. push in new pr and resolve coderabbit issues. Then run migration.
+4. host app in render and get app url
+5. finish google auth setup
+6. create facebook account and finish facebook auth setup
+7. Discover way to delete inngest app and setup eaglespress test inngest app
+8. add open ai key
+9. test eaglespress fully.
+ -->
