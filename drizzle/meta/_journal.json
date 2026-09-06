@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1785599751980,
-      "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1785955586053,
-      "tag": "0001_fetchCommentsFix",
+      "when": 1788702980394,
+      "tag": "0000_init_production",
       "breakpoints": true
     }
   ]

@@ -64,7 +64,7 @@ export function loadEnv() {
       })),
     );
 
-    throw new Error("Invalid environemnt variables");
+    throw new Error("Invalid environment variables");
   }
 
   return parsed.data;

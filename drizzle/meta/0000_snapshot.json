@@ -1,5 +1,5 @@
 {
-  "id": "66ebfdf1-d150-4b1e-a4f9-5431aa722c74",
+  "id": "4d406813-ffc6-4c08-ad32-44c0b5b2d9ea",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2095,7 +2095,9 @@
         "tiktok",
         "linkedin",
         "email",
-        "copy_link"
+        "copy_link",
+        "post-detail",
+        "profile-detail"
       ]
     }
   },
