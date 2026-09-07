@@ -171,39 +171,42 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
   async ({ step, logger }) => {
     // ── STEP 1: FETCH RSS ───────────────────────
 
-    const rawArticles = await step.run("fetch-rss-feeds", async () => {
-      const results: RawArticle[] = [];
-      const limit = pLimit(FEED_CONCURRENCY);
+    const rawArticles: RawArticle[] = await step.run(
+      "fetch-rss-feeds",
+      async (): Promise<RawArticle[]> => {
+        const results: RawArticle[] = [];
+        const limit = pLimit(FEED_CONCURRENCY);
 
-      const feedResults = await Promise.allSettled(
-        FEEDS.map((feed) =>
-          limit(async () => {
-            const parsed = await RSS_PARSER.parseURL(feed.url);
-            return parsed.items
-              .slice(0, MAX_ITEMS_PER_FEED)
-              .map((item) => parseRssItem(item, feed.url))
-              .filter((a): a is RawArticle => a !== null);
-          }),
-        ),
-      );
+        const feedResults = await Promise.allSettled(
+          FEEDS.map((feed) =>
+            limit(async () => {
+              const parsed = await RSS_PARSER.parseURL(feed.url);
+              return parsed.items
+                .slice(0, MAX_ITEMS_PER_FEED)
+                .map((item) => parseRssItem(item, feed.url))
+                .filter((a): a is RawArticle => a !== null);
+            }),
+          ),
+        );
 
-      feedResults.forEach((result, i) => {
-        if (result.status === "fulfilled") {
-          results.push(...result.value);
-        } else {
-          logger.warn(`Feed failed: ${FEEDS[i].url}`, result.reason);
-        }
-      });
+        feedResults.forEach((result, i) => {
+          if (result.status === "fulfilled") {
+            results.push(...result.value);
+          } else {
+            logger.warn(`Feed failed: ${FEEDS[i].url}`, result.reason);
+          }
+        });
 
-      return results;
-    });
+        return results;
+      },
+    );
 
     if (!rawArticles.length) return { processed: 0 };
 
     // ── MEMORY DEDUPE ───────────────────────────
 
     const memorySeen = new Set<string>();
-    const memoryDeduped = rawArticles.filter((a) => {
+    const memoryDeduped: RawArticle[] = rawArticles.filter((a) => {
       if (memorySeen.has(a.url)) return false;
       memorySeen.add(a.url);
       return true;

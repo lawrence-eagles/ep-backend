@@ -444,12 +444,14 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 9. test eaglespress fully.
  -->
 
-src/jobs/functions/fetchNews.ts(206,47): error TS7006: Parameter 'a' implicitly has an 'any' type.
-src/jobs/functions/fetchNews.ts(217,41): error TS7006: Parameter 'a' implicitly has an 'any' type.
-src/jobs/functions/fetchNews.ts(230,47): error TS7006: Parameter 'a' implicitly has an 'any' type.
-src/jobs/functions/fetchNews.ts(235,56): error TS7006: Parameter 'a' implicitly has an 'any' type.
-src/jobs/functions/fetchNews.ts(245,32): error TS7006: Parameter 'a' implicitly has an 'any' type.
-src/jobs/functions/flushBatchNotification.ts(60,13): error TS7006: Parameter 'i' implicitly has an 'any' type.
-src/lib/auth.ts(75,39): error TS6133: 'request' is declared but its value is never read.
-src/lib/auth.ts(88,67): error TS6133: 'request' is declared but its value is never read.
-src/utils/slug.ts(106,9): error TS6133: 'candidates' is declared but its value is never read.
+<!--
+src/jobs/functions/fetchNews.ts(206,47): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
+src/jobs/functions/fetchNews.ts(217,41): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
+src/jobs/functions/fetchNews.ts(230,47): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
+src/jobs/functions/fetchNews.ts(235,56): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
+src/jobs/functions/fetchNews.ts(245,32): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
+src/jobs/functions/flushBatchNotification.ts(60,13): error TS7006: Parameter 'i' implicitly has an 'any' type. ✅
+src/lib/auth.ts(75,39): error TS6133: 'request' is declared but its value is never read. ✅
+src/lib/auth.ts(88,67): error TS6133: 'request' is declared but its value is never read. ✅
+src/utils/slug.ts(106,9): error TS6133: 'candidates' is declared but its value is never read. ✅
+-->
