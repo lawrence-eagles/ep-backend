@@ -103,7 +103,7 @@ export async function insertPostWithUniqueSlug(
 // Only use for preview/UI purposes
 
 export async function ensureUniqueSlug(baseSlug: string): Promise<string> {
-  const candidates = buildSlugCandidates(baseSlug);
+  // const candidates = buildSlugCandidates(baseSlug);
 
   const existing = await db
     .select({ slug: posts.slug })

@@ -72,7 +72,7 @@ export const auth = betterAuth({
         }),
       });
     },
-    onPasswordReset: async ({ user }, request) => {
+    onPasswordReset: async ({ user }) => {
       // your logic here
       console.log(`Password for user ${user.id} has been reset.`);
     },
@@ -85,7 +85,7 @@ export const auth = betterAuth({
     deleteUser: {
       enabled: true,
 
-      sendDeleteAccountVerification: async ({ user, url, token }, request) => {
+      sendDeleteAccountVerification: async ({ user, url, token }) => {
         const { error } = await resend.emails.send({
           from: `Eaglespress <noreply@${env.DOMAIN}>`,
           to: user.email,

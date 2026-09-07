@@ -34,24 +34,27 @@ export const flushBatch: InngestFunction.Any = inngest.createFunction(
     const batchKey = `notif:batch:${userId}`;
 
     // 🧠 Step 1: get and clear batch atomically
-    const items = await step.run("get-and-clear-batch", async () => {
-      const multi = redis.multi();
+    const items: string[] = await step.run(
+      "get-and-clear-batch",
+      async (): Promise<string[]> => {
+        const multi = redis.multi();
 
-      multi.lRange(batchKey, 0, -1);
-      multi.del(batchKey);
+        multi.lRange(batchKey, 0, -1);
+        multi.del(batchKey);
 
-      const results = await multi.exec();
+        const results = await multi.exec();
 
-      if (!results || results.length === 0) return [];
+        if (!results || results.length === 0) return [];
 
-      const firstResult = results[0];
+        const firstResult = results[0];
 
-      if (Array.isArray(firstResult)) {
-        return firstResult as string[];
-      }
+        if (Array.isArray(firstResult)) {
+          return firstResult as string[];
+        }
 
-      return [];
-    });
+        return [];
+      },
+    );
 
     if (!items.length) return;
 
