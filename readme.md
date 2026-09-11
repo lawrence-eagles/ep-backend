@@ -436,22 +436,10 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 1. create new firebase key, delete old key from pc and google drive, use new key and backup it to google drive ✅
 2. create new neon db and use connection string ✅
 3. delete drizzle folder and generate new migration. push in new pr and resolve coderabbit issues. Then run migration. ✅
-4. host app in render and get app url
-5. finish google auth setup
+4. host app in render and get app url ✅
+5. finish google auth setup --- https://console.cloud.google.com/
 6. create facebook account and finish facebook auth setup
-7. Discover way to delete inngest app and setup eaglespress test inngest app
-8. add open ai key
+7. Discover way to delete inngest app and setup eaglespress test inngest app ✅
+8. add open ai key ✅
 9. test eaglespress fully.
  -->
-
-<!--
-src/jobs/functions/fetchNews.ts(206,47): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
-src/jobs/functions/fetchNews.ts(217,41): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
-src/jobs/functions/fetchNews.ts(230,47): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
-src/jobs/functions/fetchNews.ts(235,56): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
-src/jobs/functions/fetchNews.ts(245,32): error TS7006: Parameter 'a' implicitly has an 'any' type. ✅
-src/jobs/functions/flushBatchNotification.ts(60,13): error TS7006: Parameter 'i' implicitly has an 'any' type. ✅
-src/lib/auth.ts(75,39): error TS6133: 'request' is declared but its value is never read. ✅
-src/lib/auth.ts(88,67): error TS6133: 'request' is declared but its value is never read. ✅
-src/utils/slug.ts(106,9): error TS6133: 'candidates' is declared but its value is never read. ✅
--->
