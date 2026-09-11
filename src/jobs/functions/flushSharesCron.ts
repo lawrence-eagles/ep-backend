@@ -34,7 +34,8 @@ export const flushSharesCron: InngestFunction.Any = inngest.createFunction(
 
     // ⏰ Cron trigger
     triggers: {
-      cron: "*/5 * * * *", // every 5 minutes
+      // cron: "*/5 * * * *", // every 5 minutes could also be every 15 minutes or hourly. But i am using twice daily for now
+      cron: "0 0,12 * * *",
     },
   },
 
