@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
+import type { RedisClientType } from "redis";
+
 import { db } from "../db";
 import { shareApps } from "../db/schema";
 import { getRedis } from "../lib/redis";
@@ -10,40 +12,65 @@ import { getRedis } from "../lib/redis";
 
 const LOCK_KEY = "lock:flushShares";
 
-// The lock should comfortably exceed the normal runtime of this job.
-// If a flush can legitimately run longer than this, use lock renewal
-// or increase this value accordingly.
+/**
+ * The lock should be longer than the normal execution time of the job.
+ *
+ * If flushShares can legitimately take longer than this, increase the
+ * TTL or implement lock renewal.
+ */
 const LOCK_TTL = 300; // 5 minutes
 
-// Redis key containing pending share clicks:
-//
-//   share:<shareId>:clicks
-//
-// Example:
-//
-//   share:019...:clicks
-//
+/**
+ * Live Redis counters:
+ *
+ *   share:<shareId>:clicks
+ *
+ * Example:
+ *
+ *   share:019abc...:clicks
+ */
 const PENDING_KEY_PATTERN = "share:*:clicks";
 
-// When a pending counter is claimed, it is atomically renamed to:
-//
-//   share:<shareId>:clicks:processing:<batchId>
-//
-// These keys are deliberately separate from the live counter so that
-// new clicks can continue accumulating while the claimed batch is
-// being written to PostgreSQL.
+/**
+ * Claimed/processing counters:
+ *
+ *   share:<shareId>:clicks:processing:<batchId>
+ *
+ * These are separated from the live counter so new clicks can continue
+ * accumulating while the claimed batch is being persisted.
+ */
 const PROCESSING_KEY_PATTERN = "share:*:clicks:processing:*";
 
-// Maximum number of Redis keys to scan per SCAN iteration.
+/**
+ * Permanently invalid processing keys are quarantined here instead of
+ * being deleted silently.
+ *
+ * This is particularly important when the corresponding shareApps row
+ * no longer exists in PostgreSQL.
+ */
+const QUARANTINE_KEY_PREFIX = "share:clicks:quarantine:";
+
+/**
+ * Number of keys Redis should attempt to return per SCAN iteration.
+ *
+ * NOTE:
+ * redis@6 scanIterator() yields arrays/pages of keys.
+ */
 const SCAN_COUNT = 100;
+
+// ─────────────────────────────────────────────
+// 🔒 REDIS TYPE
+// ─────────────────────────────────────────────
+
+type RedisClient = RedisClientType;
 
 // ─────────────────────────────────────────────
 // 🔒 SAFE REDIS INITIALIZER
 // ─────────────────────────────────────────────
 
-async function getRedisSafe() {
+async function getRedisSafe(): Promise<RedisClient | null> {
   try {
-    return await getRedis();
+    return (await getRedis()) as RedisClient;
   } catch (err) {
     console.error("❌ REDIS INIT ERROR:", err);
     return null;
@@ -54,7 +81,7 @@ async function getRedisSafe() {
 // 🔒 DISTRIBUTED LOCK
 // ─────────────────────────────────────────────
 
-async function acquireLock(redis: any): Promise<string | null> {
+async function acquireLock(redis: RedisClient): Promise<string | null> {
   const token = randomUUID();
 
   const result = await redis.set(LOCK_KEY, token, {
@@ -70,15 +97,12 @@ async function acquireLock(redis: any): Promise<string | null> {
 }
 
 /**
- * Release the lock only if we still own it.
+ * Release the lock only when we still own it.
  *
- * GET followed by DEL is not fully atomic because another process
- * could theoretically acquire the lock between those two commands
- * after the TTL expires.
- *
- * Lua makes the ownership check + delete atomic.
+ * The GET + DEL operation is performed atomically with Lua so another
+ * process cannot acquire the lock between the ownership check and DEL.
  */
-async function releaseLock(redis: any, token: string): Promise<void> {
+async function releaseLock(redis: RedisClient, token: string): Promise<void> {
   try {
     await redis.eval(
       `
@@ -102,13 +126,14 @@ async function releaseLock(redis: any, token: string): Promise<void> {
 // 🔍 SHARE KEY PARSING
 // ─────────────────────────────────────────────
 
+/**
+ * Extract the share ID from:
+ *
+ *   share:<shareId>:clicks
+ */
 function getShareIdFromPendingKey(key: string): string | null {
   const parts = key.split(":");
 
-  // Expected:
-  //
-  // share:<shareId>:clicks
-  //
   if (parts.length !== 3) {
     return null;
   }
@@ -124,16 +149,17 @@ function getShareIdFromPendingKey(key: string): string | null {
   return parts[1] || null;
 }
 
+/**
+ * Extract information from:
+ *
+ *   share:<shareId>:clicks:processing:<batchId>
+ */
 function getProcessingKeyInfo(key: string): {
   shareId: string;
   batchId: string;
 } | null {
   const parts = key.split(":");
 
-  // Expected:
-  //
-  // share:<shareId>:clicks:processing:<batchId>
-  //
   if (parts.length !== 5) {
     return null;
   }
@@ -164,7 +190,7 @@ function getProcessingKeyInfo(key: string): {
 }
 
 // ─────────────────────────────────────────────
-// 🔢 VALIDATE CLICK COUNT
+// 🔢 CLICK COUNT VALIDATION
 // ─────────────────────────────────────────────
 
 function parseClickCount(value: string | null, key: string): number {
@@ -182,7 +208,7 @@ function parseClickCount(value: string | null, key: string): number {
 }
 
 // ─────────────────────────────────────────────
-// 🔐 CLAIM A PENDING COUNTER
+// 🔐 CLAIM PENDING COUNTER
 // ─────────────────────────────────────────────
 
 /**
@@ -190,29 +216,33 @@ function parseClickCount(value: string | null, key: string): number {
  *
  * IMPORTANT:
  *
- * We intentionally do NOT use GETDEL here.
+ * We intentionally do NOT use GETDEL.
  *
- * Before:
+ * Old behavior:
  *
  *   GETDEL
  *      ↓
  *   PostgreSQL UPDATE
+ *      ↓
+ *   PostgreSQL fails
+ *      ↓
+ *   clicks LOST
  *
- * If PostgreSQL failed, the clicks were permanently lost.
- *
- * Now:
+ * New behavior:
  *
  *   RENAME
  *      ↓
+ *   processing key
+ *      ↓
  *   PostgreSQL UPDATE
  *
- * If PostgreSQL fails, the processing key remains in Redis and can
- * be retried by the next invocation.
+ * If PostgreSQL fails, the processing key remains available for a
+ * subsequent retry.
  *
- * New clicks continue going into the original live key.
+ * New clicks continue going to the original live key.
  */
 async function claimPendingKey(
-  redis: any,
+  redis: RedisClient,
   pendingKey: string,
 ): Promise<{
   processingKey: string;
@@ -233,12 +263,10 @@ async function claimPendingKey(
 
   try {
     /**
-     * RENAME is atomic in Redis.
+     * Redis RENAME is atomic.
      *
-     * Therefore there is no GET → DEL race.
-     *
-     * Once this succeeds, the clicks are safely held by the
-     * processing key until PostgreSQL persistence succeeds.
+     * Once this succeeds, this particular counter is no longer being
+     * modified by incoming share clicks.
      */
     await redis.rename(pendingKey, processingKey);
 
@@ -247,16 +275,21 @@ async function claimPendingKey(
       shareId,
       batchId,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error
+        ? err.message.toLowerCase()
+        : String(err).toLowerCase();
+
     /**
-     * Another operation may have removed/claimed the key between
-     * SCAN and RENAME.
+     * The key may disappear between SCAN and RENAME.
      *
-     * That is not necessarily an application failure.
+     * That is expected in a distributed system and does not represent
+     * a flush failure.
      */
     if (
-      err?.message?.includes("no such key") ||
-      err?.message?.includes("ERR no such key")
+      message.includes("no such key") ||
+      message.includes("key does not exist")
     ) {
       return null;
     }
@@ -266,55 +299,133 @@ async function claimPendingKey(
 }
 
 // ─────────────────────────────────────────────
+// 🗃️ QUARANTINE TERMINAL FAILURE
+// ─────────────────────────────────────────────
+
+/**
+ * Move a permanently invalid processing key into a quarantine
+ * namespace rather than repeatedly retrying it forever.
+ *
+ * Example:
+ *
+ *   share:123:clicks:processing:abc
+ *
+ * becomes:
+ *
+ *   share:clicks:quarantine:<uuid>
+ *
+ * The original Redis value is preserved for investigation.
+ */
+async function quarantineProcessingKey(
+  redis: RedisClient,
+  processingKey: string,
+  reason: string,
+): Promise<void> {
+  const quarantineKey = `${QUARANTINE_KEY_PREFIX}${randomUUID()}`;
+
+  try {
+    /**
+     * RENAME atomically moves the value and preserves its contents.
+     */
+    await redis.rename(processingKey, quarantineKey);
+
+    /**
+     * Store diagnostic metadata separately.
+     *
+     * This does not affect the click count stored in the quarantined
+     * key itself.
+     */
+    await redis.hSet(`${quarantineKey}:metadata`, {
+      originalKey: processingKey,
+      reason,
+      quarantinedAt: new Date().toISOString(),
+    });
+
+    /**
+     * Give metadata a long TTL so operational investigation remains
+     * possible without allowing metadata to live forever.
+     */
+    await redis.expire(
+      `${quarantineKey}:metadata`,
+      60 * 60 * 24 * 30, // 30 days
+    );
+
+    console.error(
+      `🚨 Quarantined permanently invalid processing key ` +
+        `"${processingKey}" as "${quarantineKey}". ` +
+        `Reason: ${reason}`,
+    );
+  } catch (err) {
+    /**
+     * If quarantine itself fails, preserve the original processing
+     * key. It is better to retry than to lose the clicks.
+     */
+    console.error(
+      `❌ Failed to quarantine processing key "${processingKey}". ` +
+        `The original key was preserved.`,
+      err,
+    );
+
+    throw err;
+  }
+}
+
+// ─────────────────────────────────────────────
 // 💾 PERSIST ONE PROCESSING BATCH
 // ─────────────────────────────────────────────
 
+type PersistResult =
+  | {
+      status: "success";
+      count: number;
+    }
+  | {
+      status: "missing-share";
+      count: number;
+      shareId: string;
+    };
+
+/**
+ * Persist one claimed processing batch to PostgreSQL.
+ *
+ * The processing key is intentionally NOT deleted until PostgreSQL
+ * confirms that the share row was updated successfully.
+ */
 async function persistProcessingBatch(
-  redis: any,
+  redis: RedisClient,
   processingKey: string,
   shareId: string,
-): Promise<void> {
-  /**
-   * The counter was already claimed by RENAME.
-   *
-   * New clicks are NOT being added to this key.
-   *
-   * New clicks are going into:
-   *
-   *   share:<shareId>:clicks
-   *
-   * This gives us a stable snapshot for this batch.
-   */
+): Promise<PersistResult> {
   const countStr = await redis.get(processingKey);
 
+  /**
+   * The processing key may already have been removed after a previous
+   * successful attempt.
+   */
   if (countStr === null) {
-    /**
-     * This can happen if a previous attempt successfully persisted
-     * the batch and deleted the processing key before this attempt
-     * reached it.
-     *
-     * There is nothing left to process.
-     */
-    return;
+    return {
+      status: "success",
+      count: 0,
+    };
   }
 
   const count = parseClickCount(countStr, processingKey);
 
-  if (count === 0) {
+  if (count <= 0) {
     await redis.del(processingKey);
-    return;
+
+    return {
+      status: "success",
+      count: 0,
+    };
   }
 
   /**
-   * IMPORTANT:
-   *
-   * The SQL expression:
+   * Increment PostgreSQL atomically:
    *
    *   clicks = clicks + count
    *
-   * is atomic at the PostgreSQL row level.
-   *
-   * We do not read the existing clicks value into Node.js.
+   * We do not first SELECT the current click count.
    */
   const result = await db
     .update(shareApps)
@@ -327,168 +438,307 @@ async function persistProcessingBatch(
     });
 
   /**
-   * If no share row exists, do NOT delete the Redis processing key.
+   * A missing share row is a TERMINAL condition.
    *
-   * Keeping it allows the problem to be investigated and retried
-   * rather than silently losing the clicks.
+   * Retrying this forever would never succeed and would prevent
+   * processing from progressing.
    */
   if (result.length === 0) {
-    throw new Error(
-      `Share app "${shareId}" does not exist in PostgreSQL. ` +
-        `Redis processing key "${processingKey}" was preserved.`,
-    );
+    return {
+      status: "missing-share",
+      count,
+      shareId,
+    };
   }
 
   /**
-   * PostgreSQL successfully persisted the counter.
+   * PostgreSQL successfully persisted the batch.
    *
-   * Now remove the processing key.
+   * Now the Redis processing key can be removed.
    */
   await redis.del(processingKey);
 
   console.log(`✅ Flushed ${count} clicks for share ${shareId}`);
+
+  return {
+    status: "success",
+    count,
+  };
 }
 
 // ─────────────────────────────────────────────
-// 🔄 RECOVER PREVIOUS PROCESSING BATCHES
+// ♻️ RECOVER PROCESSING BATCHES
 // ─────────────────────────────────────────────
 
+type FlushPhaseResult = {
+  processed: number;
+  failed: number;
+  terminal: number;
+  errors: Error[];
+};
+
 /**
- * Recover batches left behind by an earlier failed invocation.
+ * Recover batches left behind by previous executions.
  *
- * Example:
+ * IMPORTANT:
  *
- *   invocation #1
- *        ↓
- *   RENAME pending → processing
- *        ↓
- *   PostgreSQL fails
- *        ↓
- *   processing key remains
+ * This function DOES NOT throw immediately when one batch fails.
  *
- *   invocation #2
- *        ↓
- *   finds processing key
- *        ↓
- *   retries PostgreSQL
+ * It processes every page and every key, records failures, and returns
+ * the aggregated result.
  *
- * This is what prevents the original GETDEL → DB failure → lost
- * clicks problem.
+ * This means one bad batch cannot prevent other batches from being
+ * processed.
  */
-async function recoverProcessingBatches(redis: any): Promise<number> {
-  let recovered = 0;
-  let failed = false;
+async function recoverProcessingBatches(
+  redis: RedisClient,
+): Promise<FlushPhaseResult> {
+  let processed = 0;
+  let failed = 0;
+  let terminal = 0;
+
+  const errors: Error[] = [];
 
   const iterator = redis.scanIterator({
     MATCH: PROCESSING_KEY_PATTERN,
     COUNT: SCAN_COUNT,
   });
 
-  for await (const key of iterator as AsyncIterable<string>) {
-    const info = getProcessingKeyInfo(key);
-
-    if (!info) {
-      console.warn(`⚠️ Invalid processing Redis key format: ${key}`);
-
-      continue;
-    }
-
-    try {
-      await persistProcessingBatch(redis, key, info.shareId);
-
-      recovered += 1;
-    } catch (err) {
-      failed = true;
-
-      console.error(`❌ Failed to recover processing key "${key}"`, err);
-    }
-  }
-
   /**
-   * We don't immediately throw for one failed processing key because
-   * there may be other independent share batches that can still be
-   * successfully flushed.
+   * IMPORTANT:
    *
-   * At the end, however, the caller needs to know that the job was
-   * not completely successful so Inngest can retry it.
+   * redis@6 scanIterator() yields pages:
+   *
+   *   string[]
+   *
+   * NOT:
+   *
+   *   string
+   *
+   * Therefore we iterate through the page and then through each key.
    */
-  if (failed) {
-    throw new Error("One or more Redis processing batches failed to flush.");
+  for await (const page of iterator as AsyncIterable<string[]>) {
+    for (const key of page) {
+      const info = getProcessingKeyInfo(key);
+
+      if (!info) {
+        const error = new Error(`Invalid processing Redis key format: ${key}`);
+
+        console.warn(`⚠️ ${error.message}`);
+
+        failed += 1;
+        errors.push(error);
+
+        continue;
+      }
+
+      try {
+        const result = await persistProcessingBatch(redis, key, info.shareId);
+
+        if (result.status === "missing-share") {
+          /**
+           * This is permanently invalid.
+           *
+           * Quarantine the key so it cannot block every future
+           * flush invocation.
+           */
+          try {
+            await quarantineProcessingKey(
+              redis,
+              key,
+              `Share app "${info.shareId}" no longer exists in PostgreSQL.`,
+            );
+
+            terminal += 1;
+
+            console.error(
+              `🚨 Share "${info.shareId}" does not exist. ` +
+                `Quarantined ${result.count} unpersisted clicks.`,
+            );
+          } catch (quarantineError) {
+            /**
+             * If quarantine failed, this is a genuine failure.
+             * The original processing key remains intact.
+             */
+            failed += 1;
+
+            const error =
+              quarantineError instanceof Error
+                ? quarantineError
+                : new Error(String(quarantineError));
+
+            errors.push(error);
+          }
+
+          continue;
+        }
+
+        processed += 1;
+      } catch (err) {
+        failed += 1;
+
+        const error = err instanceof Error ? err : new Error(String(err));
+
+        errors.push(error);
+
+        console.error(`❌ Failed to recover processing key "${key}"`, err);
+
+        /**
+         * IMPORTANT:
+         *
+         * Do NOT delete the processing key here.
+         *
+         * A transient PostgreSQL/Redis error should leave the batch
+         * available for the next Inngest retry.
+         */
+      }
+    }
   }
 
-  return recovered;
+  return {
+    processed,
+    failed,
+    terminal,
+    errors,
+  };
 }
 
 // ─────────────────────────────────────────────
-// 🔁 FLUSH NEW PENDING COUNTERS
+// 🔄 FLUSH NEW PENDING COUNTERS
 // ─────────────────────────────────────────────
 
-async function flushPendingCounters(redis: any): Promise<number> {
-  let flushed = 0;
-  let failed = false;
+/**
+ * Claim and persist newly accumulated share counters.
+ *
+ * Like recovery, this processes all available pages/keys even when
+ * individual keys fail.
+ */
+async function flushPendingCounters(
+  redis: RedisClient,
+): Promise<FlushPhaseResult> {
+  let processed = 0;
+  let failed = 0;
+  let terminal = 0;
+
+  const errors: Error[] = [];
 
   const iterator = redis.scanIterator({
     MATCH: PENDING_KEY_PATTERN,
     COUNT: SCAN_COUNT,
   });
 
-  for await (const key of iterator as AsyncIterable<string>) {
-    /**
-     * Make sure this is a real pending counter.
-     *
-     * This prevents accidentally processing our processing keys,
-     * because those have a different format.
-     */
-    const shareId = getShareIdFromPendingKey(key);
+  /**
+   * redis@6 scanIterator() yields string[] pages.
+   */
+  for await (const page of iterator as AsyncIterable<string[]>) {
+    for (const key of page) {
+      const shareId = getShareIdFromPendingKey(key);
 
-    if (!shareId) {
-      console.warn(`⚠️ Invalid pending Redis key format: ${key}`);
+      if (!shareId) {
+        const error = new Error(`Invalid pending Redis key format: ${key}`);
 
-      continue;
-    }
+        console.warn(`⚠️ ${error.message}`);
 
-    try {
-      const claimed = await claimPendingKey(redis, key);
+        failed += 1;
+        errors.push(error);
 
-      /**
-       * The key may have disappeared between SCAN and RENAME.
-       *
-       * That's okay. Another worker/process may have claimed it.
-       */
-      if (!claimed) {
         continue;
       }
 
-      await persistProcessingBatch(
-        redis,
-        claimed.processingKey,
-        claimed.shareId,
-      );
+      try {
+        const claimed = await claimPendingKey(redis, key);
 
-      flushed += 1;
-    } catch (err) {
-      failed = true;
+        /**
+         * The key may have disappeared between SCAN and RENAME.
+         *
+         * Another process may have already claimed it, so there is
+         * nothing for this iteration to do.
+         */
+        if (!claimed) {
+          continue;
+        }
 
-      console.error(`❌ Failed to flush Redis key "${key}"`, err);
+        const result = await persistProcessingBatch(
+          redis,
+          claimed.processingKey,
+          claimed.shareId,
+        );
 
-      /**
-       * DO NOT delete the processing key here.
-       *
-       * If PostgreSQL failed, keeping the processing key is what
-       * allows the next Inngest retry to recover the clicks.
-       */
+        if (result.status === "missing-share") {
+          /**
+           * Terminal condition.
+           *
+           * Quarantine rather than preserving forever.
+           */
+          try {
+            await quarantineProcessingKey(
+              redis,
+              claimed.processingKey,
+              `Share app "${claimed.shareId}" no longer exists in PostgreSQL.`,
+            );
+
+            terminal += 1;
+
+            console.error(
+              `🚨 Share "${claimed.shareId}" does not exist. ` +
+                `Quarantined ${result.count} unpersisted clicks.`,
+            );
+          } catch (quarantineError) {
+            failed += 1;
+
+            const error =
+              quarantineError instanceof Error
+                ? quarantineError
+                : new Error(String(quarantineError));
+
+            errors.push(error);
+          }
+
+          continue;
+        }
+
+        processed += 1;
+      } catch (err) {
+        failed += 1;
+
+        const error = err instanceof Error ? err : new Error(String(err));
+
+        errors.push(error);
+
+        console.error(`❌ Failed to flush pending Redis key "${key}"`, err);
+
+        /**
+         * If the key has already been renamed to a processing key,
+         * it remains there for the next invocation.
+         *
+         * This is intentional.
+         */
+      }
     }
   }
 
-  /**
-   * Make the overall function fail so Inngest's configured retries
-   * are actually triggered.
-   */
-  if (failed) {
-    throw new Error("One or more Redis share counters failed to flush.");
-  }
+  return {
+    processed,
+    failed,
+    terminal,
+    errors,
+  };
+}
 
-  return flushed;
+// ─────────────────────────────────────────────
+// 🧾 ERROR AGGREGATION
+// ─────────────────────────────────────────────
+
+function createAggregatedFlushError(errors: Error[]): Error {
+  const message = errors
+    .map((error, index) => {
+      return `[${index + 1}] ${error.message}`;
+    })
+    .join("\n");
+
+  return new Error(
+    `Share-click flush completed with ${errors.length} error(s):\n${message}`,
+  );
 }
 
 // ─────────────────────────────────────────────
@@ -501,17 +751,12 @@ export async function flushShares(): Promise<void> {
   const redis = await getRedisSafe();
 
   /**
-   * Redis being unavailable means the flush could not be performed.
+   * Redis being unavailable is a real failure.
    *
-   * IMPORTANT:
+   * We throw rather than return successfully so Inngest sees the
+   * failure and can retry.
    *
-   * We throw here instead of returning successfully.
-   *
-   * Otherwise Inngest would consider the function successful and
-   * would not retry it.
-   *
-   * The actual click counters are still in Redis because this
-   * function has not claimed/deleted them.
+   * No counters have been claimed at this point.
    */
   if (!redis) {
     throw new Error(
@@ -519,18 +764,18 @@ export async function flushShares(): Promise<void> {
     );
   }
 
-  // ─────────────────────────────────────────────
+  // ───────────────────────────────────────────
   // 🔒 ACQUIRE DISTRIBUTED LOCK
-  // ─────────────────────────────────────────────
+  // ───────────────────────────────────────────
 
   const lockToken = await acquireLock(redis);
 
   if (!lockToken) {
     /**
-     * Another flush invocation currently owns the lock.
+     * Another flush is already running.
      *
-     * This isn't a data-loss condition because the other invocation
-     * is responsible for the flush.
+     * No data is lost because that invocation owns the lock and will
+     * process the counters.
      */
     console.warn("⚠️ Another flushShares job is already running. Skipping.");
 
@@ -538,43 +783,128 @@ export async function flushShares(): Promise<void> {
   }
 
   try {
-    // ───────────────────────────────────────────
-    // ♻️ RECOVER FAILED PREVIOUS BATCHES FIRST
-    // ───────────────────────────────────────────
+    const allErrors: Error[] = [];
 
-    const recovered = await recoverProcessingBatches(redis);
+    // ─────────────────────────────────────────
+    // ♻️ RECOVER OLD PROCESSING BATCHES
+    // ─────────────────────────────────────────
 
-    if (recovered > 0) {
-      console.log(`♻️ Recovered ${recovered} previous share-click batch(es).`);
+    let recoveredResult: FlushPhaseResult;
+
+    try {
+      recoveredResult = await recoverProcessingBatches(redis);
+    } catch (err) {
+      /**
+       * SCAN itself can fail, for example if Redis becomes unavailable.
+       *
+       * Record the failure but DO NOT stop the entire flush yet.
+       */
+      const error = err instanceof Error ? err : new Error(String(err));
+
+      recoveredResult = {
+        processed: 0,
+        failed: 1,
+        terminal: 0,
+        errors: [error],
+      };
     }
 
-    // ───────────────────────────────────────────
-    // 🔄 FLUSH NEW COUNTERS
-    // ───────────────────────────────────────────
-
-    const flushed = await flushPendingCounters(redis);
+    allErrors.push(...recoveredResult.errors);
 
     console.log(
-      `🎉 Share-click flush complete. ` +
-        `Processed ${flushed} new batch(es) and ` +
-        `recovered ${recovered} previous batch(es).`,
+      `♻️ Recovery phase complete. ` +
+        `Processed: ${recoveredResult.processed}, ` +
+        `Failed: ${recoveredResult.failed}, ` +
+        `Quarantined: ${recoveredResult.terminal}`,
     );
+
+    // ─────────────────────────────────────────
+    // 🔄 FLUSH NEW PENDING COUNTERS
+    // ─────────────────────────────────────────
+
+    let pendingResult: FlushPhaseResult;
+
+    try {
+      pendingResult = await flushPendingCounters(redis);
+    } catch (err) {
+      /**
+       * IMPORTANT:
+       *
+       * Pending processing still runs even if recovery encountered
+       * failures.
+       *
+       * This directly fixes the CodeRabbit issue where:
+       *
+       * recoverProcessingBatches()
+       *       ↓
+       * throw
+       *       ↓
+       * flushPendingCounters() NEVER RUNS
+       */
+      const error = err instanceof Error ? err : new Error(String(err));
+
+      pendingResult = {
+        processed: 0,
+        failed: 1,
+        terminal: 0,
+        errors: [error],
+      };
+    }
+
+    allErrors.push(...pendingResult.errors);
+
+    console.log(
+      `🔄 Pending phase complete. ` +
+        `Processed: ${pendingResult.processed}, ` +
+        `Failed: ${pendingResult.failed}, ` +
+        `Quarantined: ${pendingResult.terminal}`,
+    );
+
+    // ─────────────────────────────────────────
+    // 📊 FINAL RESULT
+    // ─────────────────────────────────────────
+
+    const totalProcessed = recoveredResult.processed + pendingResult.processed;
+
+    const totalFailed = recoveredResult.failed + pendingResult.failed;
+
+    const totalTerminal = recoveredResult.terminal + pendingResult.terminal;
+
+    console.log(
+      `🎉 Share-click flush finished. ` +
+        `Processed: ${totalProcessed}, ` +
+        `Failed: ${totalFailed}, ` +
+        `Quarantined: ${totalTerminal}`,
+    );
+
+    /**
+     * IMPORTANT:
+     *
+     * Throw AFTER BOTH phases have completed.
+     *
+     * This allows Inngest to retry transient failures while still
+     * allowing healthy counters to be persisted during this invocation.
+     */
+    if (allErrors.length > 0) {
+      throw createAggregatedFlushError(allErrors);
+    }
   } catch (err) {
     /**
      * CRITICAL:
      *
-     * Do NOT swallow this error.
+     * Never swallow the error here.
      *
-     * flushShares() must reject so the Inngest function receives the
-     * failure and its configured retries can run.
+     * flushShares() must reject so the surrounding Inngest function
+     * can recognize the invocation as failed and perform its configured
+     * retries.
      */
     console.error("❌ Share-click flush failed:", err);
 
     throw err;
   } finally {
-    // ───────────────────────────────────────────
+    // ─────────────────────────────────────────
     // 🔓 RELEASE DISTRIBUTED LOCK
-    // ───────────────────────────────────────────
+    // ─────────────────────────────────────────
 
     await releaseLock(redis, lockToken);
   }
