@@ -583,137 +583,157 @@ async function recoverProcessingBatches(
    *
    * Therefore we iterate through the page and then through each key.
    */
-  for await (const page of iterator as AsyncIterable<string[]>) {
-    for (const key of page) {
-      const info = getProcessingKeyInfo(key);
+  try {
+    for await (const page of iterator as AsyncIterable<string[]>) {
+      for (const key of page) {
+        const info = getProcessingKeyInfo(key);
 
-      /**
-       * A structurally invalid processing key is terminal.
-       *
-       * It cannot be processed safely because there is no reliable
-       * share ID/batch ID to associate with it.
-       */
-      if (!info) {
+        /**
+         * A structurally invalid processing key is terminal.
+         *
+         * It cannot be processed safely because there is no reliable
+         * share ID/batch ID to associate with it.
+         */
+        if (!info) {
+          try {
+            await quarantineRedisKey(
+              redis,
+              key,
+              "Invalid processing Redis key format.",
+            );
+
+            terminal += 1;
+          } catch (quarantineError) {
+            failed += 1;
+
+            const error =
+              quarantineError instanceof Error
+                ? quarantineError
+                : new Error(String(quarantineError));
+
+            errors.push(error);
+
+            console.error(
+              `❌ Failed to quarantine invalid processing Redis key "${key}"`,
+              quarantineError,
+            );
+          }
+
+          continue;
+        }
+
         try {
-          await quarantineRedisKey(
-            redis,
-            key,
-            "Invalid processing Redis key format.",
-          );
+          const result = await persistProcessingBatch(redis, key, info.shareId);
 
-          terminal += 1;
-        } catch (quarantineError) {
+          /**
+           * Missing PostgreSQL share row is terminal.
+           */
+          if (result.status === "missing-share") {
+            try {
+              await quarantineRedisKey(
+                redis,
+                key,
+                `Share app "${info.shareId}" no longer exists in PostgreSQL.`,
+              );
+
+              terminal += 1;
+
+              console.error(
+                `🚨 Share "${info.shareId}" does not exist. ` +
+                  `Quarantined ${result.count} unpersisted clicks.`,
+              );
+            } catch (quarantineError) {
+              /**
+               * If quarantine failed, this is a genuine retryable
+               * failure. The original data must remain recoverable.
+               */
+              failed += 1;
+
+              const error =
+                quarantineError instanceof Error
+                  ? quarantineError
+                  : new Error(String(quarantineError));
+
+              errors.push(error);
+            }
+
+            continue;
+          }
+
+          /**
+           * Malformed/non-positive/non-safe-integer click count is
+           * terminal. Quarantine it rather than retrying forever.
+           */
+          if (result.status === "invalid-count") {
+            try {
+              await quarantineRedisKey(
+                redis,
+                key,
+                `Invalid click count "${result.value}".`,
+              );
+
+              terminal += 1;
+
+              console.error(
+                `🚨 Invalid click count for processing key "${key}". ` +
+                  `Quarantined value "${result.value}".`,
+              );
+            } catch (quarantineError) {
+              /**
+               * Quarantine failure is retryable.
+               */
+              failed += 1;
+
+              const error =
+                quarantineError instanceof Error
+                  ? quarantineError
+                  : new Error(String(quarantineError));
+
+              errors.push(error);
+            }
+
+            continue;
+          }
+
+          processed += 1;
+        } catch (err) {
           failed += 1;
 
-          const error =
-            quarantineError instanceof Error
-              ? quarantineError
-              : new Error(String(quarantineError));
+          const error = err instanceof Error ? err : new Error(String(err));
 
           errors.push(error);
 
-          console.error(
-            `❌ Failed to quarantine invalid processing Redis key "${key}"`,
-            quarantineError,
-          );
+          console.error(`❌ Failed to recover processing key "${key}"`, err);
+
+          /**
+           * IMPORTANT:
+           *
+           * Do NOT delete the processing key here.
+           *
+           * A transient PostgreSQL/Redis error should leave the batch
+           * available for the next Inngest retry.
+           */
         }
-
-        continue;
-      }
-
-      try {
-        const result = await persistProcessingBatch(redis, key, info.shareId);
-
-        /**
-         * Missing PostgreSQL share row is terminal.
-         */
-        if (result.status === "missing-share") {
-          try {
-            await quarantineRedisKey(
-              redis,
-              key,
-              `Share app "${info.shareId}" no longer exists in PostgreSQL.`,
-            );
-
-            terminal += 1;
-
-            console.error(
-              `🚨 Share "${info.shareId}" does not exist. ` +
-                `Quarantined ${result.count} unpersisted clicks.`,
-            );
-          } catch (quarantineError) {
-            /**
-             * If quarantine failed, this is a genuine retryable
-             * failure. The original data must remain recoverable.
-             */
-            failed += 1;
-
-            const error =
-              quarantineError instanceof Error
-                ? quarantineError
-                : new Error(String(quarantineError));
-
-            errors.push(error);
-          }
-
-          continue;
-        }
-
-        /**
-         * Malformed/non-positive/non-safe-integer click count is
-         * terminal. Quarantine it rather than retrying forever.
-         */
-        if (result.status === "invalid-count") {
-          try {
-            await quarantineRedisKey(
-              redis,
-              key,
-              `Invalid click count "${result.value}".`,
-            );
-
-            terminal += 1;
-
-            console.error(
-              `🚨 Invalid click count for processing key "${key}". ` +
-                `Quarantined value "${result.value}".`,
-            );
-          } catch (quarantineError) {
-            /**
-             * Quarantine failure is retryable.
-             */
-            failed += 1;
-
-            const error =
-              quarantineError instanceof Error
-                ? quarantineError
-                : new Error(String(quarantineError));
-
-            errors.push(error);
-          }
-
-          continue;
-        }
-
-        processed += 1;
-      } catch (err) {
-        failed += 1;
-
-        const error = err instanceof Error ? err : new Error(String(err));
-
-        errors.push(error);
-
-        console.error(`❌ Failed to recover processing key "${key}"`, err);
-
-        /**
-         * IMPORTANT:
-         *
-         * Do NOT delete the processing key here.
-         *
-         * A transient PostgreSQL/Redis error should leave the batch
-         * available for the next Inngest retry.
-         */
       }
     }
+  } catch (err) {
+    /**
+     * Redis SCAN can fail while the iterator is being consumed.
+     *
+     * IMPORTANT:
+     *
+     * Any retryable errors collected from processing earlier keys must
+     * be preserved. Do not rethrow here because doing so would cause
+     * the caller to replace the accumulated phase result with only the
+     * scan error.
+     */
+    failed += 1;
+
+    const error = err instanceof Error ? err : new Error(String(err));
+
+    errors.push(error);
+
+    console.error("❌ Failed to scan processing Redis keys:", error);
   }
 
   return {
