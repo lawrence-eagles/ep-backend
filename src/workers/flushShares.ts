@@ -42,13 +42,24 @@ const PENDING_KEY_PATTERN = "share:*:clicks";
 const PROCESSING_KEY_PATTERN = "share:*:clicks:processing:*";
 
 /**
- * Permanently invalid processing keys are quarantined here instead of
- * being deleted silently.
+ * Permanently invalid Redis counters are moved into this namespace.
  *
- * This is particularly important when the corresponding shareApps row
- * no longer exists in PostgreSQL.
+ * Examples of terminal failures:
+ *
+ * - Invalid Redis key format
+ * - Invalid click count
+ * - Missing shareApps PostgreSQL row
+ *
+ * Quarantining instead of deleting preserves the original value for
+ * operational investigation while preventing poison keys from blocking
+ * future flushes.
  */
 const QUARANTINE_KEY_PREFIX = "share:clicks:quarantine:";
+
+/**
+ * Quarantined data is retained for 30 days.
+ */
+const QUARANTINE_TTL = 60 * 60 * 24 * 30; // 30 days
 
 /**
  * Number of keys Redis should attempt to return per SCAN iteration.
@@ -193,6 +204,24 @@ function getProcessingKeyInfo(key: string): {
 // 🔢 CLICK COUNT VALIDATION
 // ─────────────────────────────────────────────
 
+/**
+ * A malformed click count is a terminal data problem rather than a
+ * transient infrastructure failure.
+ *
+ * We use a dedicated error class so callers can quarantine the key
+ * without adding the error to the retryable error collection.
+ */
+class InvalidClickCountError extends Error {
+  constructor(
+    public readonly key: string,
+    public readonly value: string,
+  ) {
+    super(`Invalid click count for Redis key "${key}": ${value}`);
+
+    this.name = "InvalidClickCountError";
+  }
+}
+
 function parseClickCount(value: string | null, key: string): number {
   if (value === null) {
     return 0;
@@ -201,7 +230,7 @@ function parseClickCount(value: string | null, key: string): number {
   const count = Number(value);
 
   if (!Number.isSafeInteger(count) || count <= 0) {
-    throw new Error(`Invalid click count for Redis key "${key}": ${value}`);
+    throw new InvalidClickCountError(key, value);
   }
 
   return count;
@@ -252,8 +281,6 @@ async function claimPendingKey(
   const shareId = getShareIdFromPendingKey(pendingKey);
 
   if (!shareId) {
-    console.warn(`⚠️ Invalid pending Redis key format: ${pendingKey}`);
-
     return null;
   }
 
@@ -303,8 +330,8 @@ async function claimPendingKey(
 // ─────────────────────────────────────────────
 
 /**
- * Move a permanently invalid processing key into a quarantine
- * namespace rather than repeatedly retrying it forever.
+ * Move a permanently invalid Redis key into a quarantine namespace
+ * rather than repeatedly retrying it forever.
  *
  * Example:
  *
@@ -315,10 +342,12 @@ async function claimPendingKey(
  *   share:clicks:quarantine:<uuid>
  *
  * The original Redis value is preserved for investigation.
+ *
+ * Both the quarantined value and its metadata receive a 30-day TTL.
  */
-async function quarantineProcessingKey(
+async function quarantineRedisKey(
   redis: RedisClient,
-  processingKey: string,
+  sourceKey: string,
   reason: string,
 ): Promise<void> {
   const quarantineKey = `${QUARANTINE_KEY_PREFIX}${randomUUID()}`;
@@ -327,7 +356,19 @@ async function quarantineProcessingKey(
     /**
      * RENAME atomically moves the value and preserves its contents.
      */
-    await redis.rename(processingKey, quarantineKey);
+    await redis.rename(sourceKey, quarantineKey);
+
+    /**
+     * IMPORTANT:
+     *
+     * Redis RENAME preserves the source key's TTL.
+     *
+     * Our source counters intentionally have no TTL, so the quarantine
+     * key would otherwise live forever.
+     *
+     * Explicitly apply the 30-day TTL to the quarantined value.
+     */
+    await redis.expire(quarantineKey, QUARANTINE_TTL);
 
     /**
      * Store diagnostic metadata separately.
@@ -335,36 +376,37 @@ async function quarantineProcessingKey(
      * This does not affect the click count stored in the quarantined
      * key itself.
      */
-    await redis.hSet(`${quarantineKey}:metadata`, {
-      originalKey: processingKey,
+    const metadataKey = `${quarantineKey}:metadata`;
+
+    await redis.hSet(metadataKey, {
+      originalKey: sourceKey,
       reason,
       quarantinedAt: new Date().toISOString(),
     });
 
     /**
-     * Give metadata a long TTL so operational investigation remains
-     * possible without allowing metadata to live forever.
+     * Metadata receives the same 30-day retention period.
      */
-    await redis.expire(
-      `${quarantineKey}:metadata`,
-      60 * 60 * 24 * 30, // 30 days
-    );
+    await redis.expire(metadataKey, QUARANTINE_TTL);
 
     console.error(
-      `🚨 Quarantined permanently invalid processing key ` +
-        `"${processingKey}" as "${quarantineKey}". ` +
+      `🚨 Quarantined terminal Redis key ` +
+        `"${sourceKey}" as "${quarantineKey}". ` +
         `Reason: ${reason}`,
     );
   } catch (err) {
     /**
-     * If quarantine itself fails, preserve the original processing
-     * key. It is better to retry than to lose the clicks.
+     * If quarantine itself fails, preserve the source key whenever
+     * possible. It is better to retry than to lose the clicks.
+     *
+     * NOTE:
+     *
+     * If RENAME itself succeeded but a later EXPIRE/HSET operation
+     * failed, the value already exists under the quarantine key.
+     * The error is intentionally propagated so the invocation remains
+     * retryable and the operational issue is visible.
      */
-    console.error(
-      `❌ Failed to quarantine processing key "${processingKey}". ` +
-        `The original key was preserved.`,
-      err,
-    );
+    console.error(`❌ Failed to quarantine Redis key "${sourceKey}".`, err);
 
     throw err;
   }
@@ -383,6 +425,10 @@ type PersistResult =
       status: "missing-share";
       count: number;
       shareId: string;
+    }
+  | {
+      status: "invalid-count";
+      value: string;
     };
 
 /**
@@ -390,6 +436,9 @@ type PersistResult =
  *
  * The processing key is intentionally NOT deleted until PostgreSQL
  * confirms that the share row was updated successfully.
+ *
+ * Terminal data errors are returned as explicit statuses so callers
+ * can quarantine them without causing endless retries.
  */
 async function persistProcessingBatch(
   redis: RedisClient,
@@ -409,9 +458,26 @@ async function persistProcessingBatch(
     };
   }
 
-  const count = parseClickCount(countStr, processingKey);
+  let count: number;
+
+  try {
+    count = parseClickCount(countStr, processingKey);
+  } catch (err) {
+    if (err instanceof InvalidClickCountError) {
+      return {
+        status: "invalid-count",
+        value: err.value,
+      };
+    }
+
+    throw err;
+  }
 
   if (count <= 0) {
+    /**
+     * This branch is defensive because parseClickCount already rejects
+     * non-positive values.
+     */
     await redis.del(processingKey);
 
     return {
@@ -484,8 +550,8 @@ type FlushPhaseResult = {
  *
  * This function DOES NOT throw immediately when one batch fails.
  *
- * It processes every page and every key, records failures, and returns
- * the aggregated result.
+ * It processes every page and every key, records retryable failures,
+ * quarantines terminal failures, and returns the aggregated result.
  *
  * This means one bad batch cannot prevent other batches from being
  * processed.
@@ -521,13 +587,36 @@ async function recoverProcessingBatches(
     for (const key of page) {
       const info = getProcessingKeyInfo(key);
 
+      /**
+       * A structurally invalid processing key is terminal.
+       *
+       * It cannot be processed safely because there is no reliable
+       * share ID/batch ID to associate with it.
+       */
       if (!info) {
-        const error = new Error(`Invalid processing Redis key format: ${key}`);
+        try {
+          await quarantineRedisKey(
+            redis,
+            key,
+            "Invalid processing Redis key format.",
+          );
 
-        console.warn(`⚠️ ${error.message}`);
+          terminal += 1;
+        } catch (quarantineError) {
+          failed += 1;
 
-        failed += 1;
-        errors.push(error);
+          const error =
+            quarantineError instanceof Error
+              ? quarantineError
+              : new Error(String(quarantineError));
+
+          errors.push(error);
+
+          console.error(
+            `❌ Failed to quarantine invalid processing Redis key "${key}"`,
+            quarantineError,
+          );
+        }
 
         continue;
       }
@@ -535,15 +624,12 @@ async function recoverProcessingBatches(
       try {
         const result = await persistProcessingBatch(redis, key, info.shareId);
 
+        /**
+         * Missing PostgreSQL share row is terminal.
+         */
         if (result.status === "missing-share") {
-          /**
-           * This is permanently invalid.
-           *
-           * Quarantine the key so it cannot block every future
-           * flush invocation.
-           */
           try {
-            await quarantineProcessingKey(
+            await quarantineRedisKey(
               redis,
               key,
               `Share app "${info.shareId}" no longer exists in PostgreSQL.`,
@@ -557,8 +643,43 @@ async function recoverProcessingBatches(
             );
           } catch (quarantineError) {
             /**
-             * If quarantine failed, this is a genuine failure.
-             * The original processing key remains intact.
+             * If quarantine failed, this is a genuine retryable
+             * failure. The original data must remain recoverable.
+             */
+            failed += 1;
+
+            const error =
+              quarantineError instanceof Error
+                ? quarantineError
+                : new Error(String(quarantineError));
+
+            errors.push(error);
+          }
+
+          continue;
+        }
+
+        /**
+         * Malformed/non-positive/non-safe-integer click count is
+         * terminal. Quarantine it rather than retrying forever.
+         */
+        if (result.status === "invalid-count") {
+          try {
+            await quarantineRedisKey(
+              redis,
+              key,
+              `Invalid click count "${result.value}".`,
+            );
+
+            terminal += 1;
+
+            console.error(
+              `🚨 Invalid click count for processing key "${key}". ` +
+                `Quarantined value "${result.value}".`,
+            );
+          } catch (quarantineError) {
+            /**
+             * Quarantine failure is retryable.
              */
             failed += 1;
 
@@ -610,7 +731,7 @@ async function recoverProcessingBatches(
 /**
  * Claim and persist newly accumulated share counters.
  *
- * Like recovery, this processes all available pages/keys even when
+ * Like recovery, this processes all available pages and keys even when
  * individual keys fail.
  */
 async function flushPendingCounters(
@@ -634,13 +755,36 @@ async function flushPendingCounters(
     for (const key of page) {
       const shareId = getShareIdFromPendingKey(key);
 
+      /**
+       * A structurally invalid pending key is terminal.
+       *
+       * Quarantine it immediately because there is no safe share ID
+       * with which to persist the counter.
+       */
       if (!shareId) {
-        const error = new Error(`Invalid pending Redis key format: ${key}`);
+        try {
+          await quarantineRedisKey(
+            redis,
+            key,
+            "Invalid pending Redis key format.",
+          );
 
-        console.warn(`⚠️ ${error.message}`);
+          terminal += 1;
+        } catch (quarantineError) {
+          failed += 1;
 
-        failed += 1;
-        errors.push(error);
+          const error =
+            quarantineError instanceof Error
+              ? quarantineError
+              : new Error(String(quarantineError));
+
+          errors.push(error);
+
+          console.error(
+            `❌ Failed to quarantine invalid pending Redis key "${key}"`,
+            quarantineError,
+          );
+        }
 
         continue;
       }
@@ -664,14 +808,12 @@ async function flushPendingCounters(
           claimed.shareId,
         );
 
+        /**
+         * Missing PostgreSQL share row is terminal.
+         */
         if (result.status === "missing-share") {
-          /**
-           * Terminal condition.
-           *
-           * Quarantine rather than preserving forever.
-           */
           try {
-            await quarantineProcessingKey(
+            await quarantineRedisKey(
               redis,
               claimed.processingKey,
               `Share app "${claimed.shareId}" no longer exists in PostgreSQL.`,
@@ -684,6 +826,45 @@ async function flushPendingCounters(
                 `Quarantined ${result.count} unpersisted clicks.`,
             );
           } catch (quarantineError) {
+            /**
+             * If quarantine failed, this is a genuine retryable
+             * failure. The processing key remains recoverable.
+             */
+            failed += 1;
+
+            const error =
+              quarantineError instanceof Error
+                ? quarantineError
+                : new Error(String(quarantineError));
+
+            errors.push(error);
+          }
+
+          continue;
+        }
+
+        /**
+         * Malformed/non-positive/non-safe-integer click count is
+         * terminal.
+         */
+        if (result.status === "invalid-count") {
+          try {
+            await quarantineRedisKey(
+              redis,
+              claimed.processingKey,
+              `Invalid click count "${result.value}".`,
+            );
+
+            terminal += 1;
+
+            console.error(
+              `🚨 Invalid click count for pending key "${key}". ` +
+                `Quarantined value "${result.value}".`,
+            );
+          } catch (quarantineError) {
+            /**
+             * Quarantine failure remains retryable.
+             */
             failed += 1;
 
             const error =
@@ -833,13 +1014,8 @@ export async function flushShares(): Promise<void> {
        * Pending processing still runs even if recovery encountered
        * failures.
        *
-       * This directly fixes the CodeRabbit issue where:
-       *
-       * recoverProcessingBatches()
-       *       ↓
-       * throw
-       *       ↓
-       * flushPendingCounters() NEVER RUNS
+       * This prevents one permanently/transiently bad processing
+       * batch from blocking healthy new counters.
        */
       const error = err instanceof Error ? err : new Error(String(err));
 
@@ -884,6 +1060,8 @@ export async function flushShares(): Promise<void> {
      *
      * This allows Inngest to retry transient failures while still
      * allowing healthy counters to be persisted during this invocation.
+     *
+     * Terminal failures are intentionally excluded from allErrors.
      */
     if (allErrors.length > 0) {
       throw createAggregatedFlushError(allErrors);
