@@ -441,13 +441,22 @@ async function resolveAndValidateHostname(hostname: string): Promise<void> {
     return;
   }
 
-  const addresses = await withTimeout(
-    dns.lookup(normalized, {
-      all: true,
-      verbatim: true,
-    }),
-    DNS_TIMEOUT_MS,
-  );
+  let addresses: Array<{ address: string; family: number }>;
+
+  try {
+    addresses = await withTimeout(
+      dns.lookup(normalized, {
+        all: true,
+        verbatim: true,
+      }),
+      DNS_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new TransientUrlValidationError(
+      `Transient DNS validation failure for hostname: ${hostname}`,
+      { cause: error },
+    );
+  }
 
   if (!addresses.length) {
     throw new Error(`Hostname did not resolve: ${hostname}`);
@@ -463,6 +472,13 @@ async function resolveAndValidateHostname(hostname: string): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────
+class TransientUrlValidationError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "TransientUrlValidationError";
+  }
+}
+
 // REDIRECT VALIDATION
 // ─────────────────────────────────────────────────────────────
 
@@ -535,22 +551,29 @@ async function validateUrlRedirectChain(rawUrl: string): Promise<void> {
         }),
         SCRAPE_TIMEOUT_MS,
       );
-    } catch {
+    } catch (headError) {
       /**
        * Some servers reject HEAD requests. A small GET request
-       * is used as a validation fallback.
+       * is used as the validation fallback.
        */
-      response = await withTimeout(
-        fetch(currentUrl, {
-          method: "GET",
-          redirect: "manual",
-          headers: {
-            Range: "bytes=0-0",
-            "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
-          },
-        }),
-        SCRAPE_TIMEOUT_MS,
-      );
+      try {
+        response = await withTimeout(
+          fetch(currentUrl, {
+            method: "GET",
+            redirect: "manual",
+            headers: {
+              Range: "bytes=0-0",
+              "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
+            },
+          }),
+          SCRAPE_TIMEOUT_MS,
+        );
+      } catch (getError) {
+        throw new TransientUrlValidationError(
+          `Transient URL validation probe failure: ${currentUrl}`,
+          { cause: getError ?? headError },
+        );
+      }
     }
 
     if (response.status < 300 || response.status >= 400) {
@@ -690,7 +713,23 @@ function parseRssItem(item: Parser.Item, feedUrl: string): RawArticle | null {
 // ─────────────────────────────────────────────────────────────
 
 async function scrapeOneArticle(article: RawArticle): Promise<ScrapedArticle> {
-  await validateUrlRedirectChain(article.url);
+  /**
+   * Deliberate validation/policy rejections must propagate.
+   * Only transient DNS/probe failures may use the RSS fallback.
+   */
+  try {
+    await validateUrlRedirectChain(article.url);
+  } catch (error) {
+    if (!(error instanceof TransientUrlValidationError)) {
+      throw error;
+    }
+
+    return {
+      ...article,
+      content: isValidContent(article.description) ? article.description : null,
+      imageUrl: article.imageUrl,
+    };
+  }
 
   try {
     const scraped = await withTimeout(
@@ -712,15 +751,12 @@ async function scrapeOneArticle(article: RawArticle): Promise<ScrapedArticle> {
   } catch {
     /**
      * Scraping failure falls back to the RSS description.
-     *
      * The caller counts this article as processed but failed if
      * no usable content remains.
      */
     return {
       ...article,
-
       content: isValidContent(article.description) ? article.description : null,
-
       imageUrl: article.imageUrl,
     };
   }
