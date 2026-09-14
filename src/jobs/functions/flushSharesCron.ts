@@ -29,7 +29,8 @@ export const flushSharesCron: InngestFunction.Any = inngest.createFunction(
 
     // ⏱️ Correct timeout config (FIXED)
     timeouts: {
-      start: "55s",
+      start: "5m",
+      finish: "30m",
     },
 
     // ⏰ Cron trigger
