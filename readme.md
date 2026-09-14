@@ -444,3 +444,10 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 9. test eaglespress fully.
 10. migrate to railway later.
  -->
+
+<!--
+old flush cron timeouts:
+timeouts: {
+      start: "55s",
+    },
+ -->
