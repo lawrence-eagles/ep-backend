@@ -99,11 +99,6 @@ const MIN_CONTENT_LENGTH = 200;
 const MAX_RSS_DESCRIPTION_LENGTH = 4_000;
 
 /**
- * Maximum number of redirects followed during URL validation.
- */
-const MAX_REDIRECTS = 5;
-
-/**
  * Timeout for an individual article scrape.
  */
 const SCRAPE_TIMEOUT_MS = 10_000;
@@ -146,6 +141,21 @@ type ArticleCreatedEventData = {
   summary: string;
   slug: string;
 };
+
+/**
+ * Errors caused by temporary network conditions during URL
+ * validation. These are safe to handle by falling back to the
+ * RSS description.
+ *
+ * Deliberate URL-policy violations use ordinary Error and MUST
+ * propagate to the caller.
+ */
+class TransientUrlValidationError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "TransientUrlValidationError";
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // URL / SSRF PROTECTION
@@ -216,75 +226,247 @@ function isPrivateIPv4(address: string): boolean {
   return false;
 }
 
+/**
+ * Expand an IPv6 address into its eight 16-bit hexadecimal
+ * groups.
+ *
+ * IPv6 URLs may contain compressed notation, for example:
+ *
+ *   ::1
+ *   ::ffff:7f00:1
+ *   2001:db8::1
+ *
+ * IPv4-embedded notation is also supported:
+ *
+ *   ::ffff:127.0.0.1
+ */
+function expandIPv6(address: string): number[] | null {
+  let normalized = address.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+
+  if (!normalized) {
+    return null;
+  }
+
+  /**
+   * Convert an IPv4 suffix into two IPv6 16-bit groups.
+   *
+   * Example:
+   *
+   * 127.0.0.1
+   *
+   * becomes:
+   *
+   * 0x7f00, 0x0001
+   */
+  if (normalized.includes(".")) {
+    const lastColon = normalized.lastIndexOf(":");
+
+    if (lastColon === -1) {
+      return null;
+    }
+
+    const ipv4Part = normalized.slice(lastColon + 1);
+
+    if (net.isIP(ipv4Part) !== 4 || !isValidIPv4(ipv4Part)) {
+      return null;
+    }
+
+    const ipv4Parts = ipv4Part.split(".").map(Number);
+
+    const high = (ipv4Parts[0] << 8) | ipv4Parts[1];
+    const low = (ipv4Parts[2] << 8) | ipv4Parts[3];
+
+    normalized = `${normalized.slice(0, lastColon)}:${high.toString(
+      16,
+    )}:${low.toString(16)}`;
+  }
+
+  const doubleColonParts = normalized.split("::");
+
+  if (doubleColonParts.length > 2) {
+    return null;
+  }
+
+  const left = doubleColonParts[0]
+    ? doubleColonParts[0].split(":").filter(Boolean)
+    : [];
+
+  const right = doubleColonParts[1]
+    ? doubleColonParts[1].split(":").filter(Boolean)
+    : [];
+
+  const parseGroup = (group: string): number | null => {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) {
+      return null;
+    }
+
+    const value = Number.parseInt(group, 16);
+
+    return Number.isInteger(value) && value >= 0 && value <= 0xffff
+      ? value
+      : null;
+  };
+
+  const leftGroups = left.map(parseGroup);
+  const rightGroups = right.map(parseGroup);
+
+  if (
+    leftGroups.some((value) => value === null) ||
+    rightGroups.some((value) => value === null)
+  ) {
+    return null;
+  }
+
+  const leftValues = leftGroups as number[];
+  const rightValues = rightGroups as number[];
+
+  if (doubleColonParts.length === 1) {
+    if (leftValues.length !== 8) {
+      return null;
+    }
+
+    return leftValues;
+  }
+
+  const missingGroups = 8 - leftValues.length - rightValues.length;
+
+  if (missingGroups < 1) {
+    return null;
+  }
+
+  return [
+    ...leftValues,
+    ...new Array<number>(missingGroups).fill(0),
+    ...rightValues,
+  ];
+}
+
+function isValidIPv4(address: string): boolean {
+  const parts = address.split(".").map(Number);
+
+  return (
+    parts.length === 4 &&
+    parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+  );
+}
+
 function isPrivateIPv6(address: string): boolean {
   const normalized = address
     .toLowerCase()
     .replace(/^\[/, "")
     .replace(/\]$/, "");
 
-  // IPv6 loopback
-  if (normalized === "::1") {
-    return true;
+  const groups = expandIPv6(normalized);
+
+  if (!groups) {
+    return false;
   }
 
-  // IPv6 unspecified
-  if (normalized === "::") {
+  /**
+   * IPv6 loopback:
+   *
+   * ::1
+   */
+  if (
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0 &&
+    groups[6] === 0 &&
+    groups[7] === 1
+  ) {
     return true;
   }
 
   /**
-   * IPv4-mapped IPv6 addresses:
+   * IPv6 unspecified:
+   *
+   * ::
+   */
+  if (groups.every((group) => group === 0)) {
+    return true;
+  }
+
+  /**
+   * IPv4-mapped IPv6:
    *
    * ::ffff:127.0.0.1
-   * ::ffff:10.0.0.1
-   * ::ffff:192.168.1.1
+   * ::ffff:7f00:1
+   *
+   * Both representations describe the same address.
+   *
+   * The important part is that we inspect the canonical
+   * hexadecimal representation rather than relying on the
+   * textual dotted-decimal representation.
    */
-  const mappedMatch = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const isIPv4Mapped =
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0xffff;
 
-  if (mappedMatch) {
-    return isPrivateIPv4(mappedMatch[1]);
+  if (isIPv4Mapped) {
+    const firstOctet = groups[6] >> 8;
+    const secondOctet = groups[6] & 0xff;
+    const thirdOctet = groups[7] >> 8;
+    const fourthOctet = groups[7] & 0xff;
+
+    const mappedIPv4 = `${firstOctet}.${secondOctet}.${thirdOctet}.${fourthOctet}`;
+
+    return isPrivateIPv4(mappedIPv4);
   }
 
   /**
    * IPv4-compatible / IPv4-embedded forms.
+   *
+   * These are included for completeness so an IPv4 address
+   * embedded in an IPv6 representation cannot bypass the
+   * IPv4 private-network checks.
    */
-  const lastColon = normalized.lastIndexOf(":");
+  const isIPv4Compatible =
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0;
 
-  if (lastColon !== -1) {
-    const possibleIPv4 = normalized.slice(lastColon + 1);
+  if (isIPv4Compatible) {
+    const firstOctet = groups[6] >> 8;
+    const secondOctet = groups[6] & 0xff;
+    const thirdOctet = groups[7] >> 8;
+    const fourthOctet = groups[7] & 0xff;
 
-    if (possibleIPv4.includes(".") && net.isIP(possibleIPv4) === 4) {
-      if (isPrivateIPv4(possibleIPv4)) {
-        return true;
-      }
+    const embeddedIPv4 = `${firstOctet}.${secondOctet}.${thirdOctet}.${fourthOctet}`;
+
+    if (isPrivateIPv4(embeddedIPv4)) {
+      return true;
     }
   }
 
   /**
    * fc00::/7 - Unique Local Addresses.
    */
-  const firstGroup = normalized.split(":").find(Boolean);
+  if ((groups[0] & 0xfe00) === 0xfc00) {
+    return true;
+  }
 
-  if (firstGroup) {
-    const first16 = Number.parseInt(firstGroup, 16);
+  /**
+   * fe80::/10 - link-local.
+   */
+  if ((groups[0] & 0xffc0) === 0xfe80) {
+    return true;
+  }
 
-    if (Number.isInteger(first16) && (first16 & 0xfe00) === 0xfc00) {
-      return true;
-    }
-
-    /**
-     * fe80::/10 - link-local.
-     */
-    if (Number.isInteger(first16) && (first16 & 0xffc0) === 0xfe80) {
-      return true;
-    }
-
-    /**
-     * ff00::/8 - multicast.
-     */
-    if (Number.isInteger(first16) && (first16 & 0xff00) === 0xff00) {
-      return true;
-    }
+  /**
+   * ff00::/8 - multicast.
+   */
+  if ((groups[0] & 0xff00) === 0xff00) {
+    return true;
   }
 
   return false;
@@ -472,13 +654,6 @@ async function resolveAndValidateHostname(hostname: string): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────
-class TransientUrlValidationError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "TransientUrlValidationError";
-  }
-}
-
 // REDIRECT VALIDATION
 // ─────────────────────────────────────────────────────────────
 
@@ -497,102 +672,87 @@ function getRedirectUrl(currentUrl: string, response: Response): string | null {
 }
 
 /**
- * Validate the complete redirect chain before passing the URL
- * to the article scraper.
+ * Validate that the article URL can be fetched directly without
+ * requiring the scraper to follow an HTTP redirect.
  *
- * Each hostname is DNS-resolved and every redirect target is
- * checked independently.
+ * IMPORTANT SECURITY PROPERTY:
  *
- * NOTE:
- * scrapeArticle is an existing project helper and accepts only
- * a URL. This preflight prevents feed-controlled URLs and known
- * redirect chains from reaching it unless every hop is safe.
+ * scrapeArticle() accepts only a URL and controls its own HTTP
+ * redirect behavior. Therefore this function deliberately rejects
+ * redirect responses instead of manually validating a redirect
+ * chain and then passing the original URL to a scraper that may
+ * independently follow the chain.
+ *
+ * This keeps the validation policy aligned with the actual URL
+ * that scrapeArticle receives.
  */
 async function validateUrlRedirectChain(rawUrl: string): Promise<void> {
   if (!isSafeUrl(rawUrl)) {
     throw new Error(`Unsafe article URL: ${rawUrl}`);
   }
 
-  let currentUrl = rawUrl;
+  const parsed = new URL(rawUrl);
 
-  const visited = new Set<string>();
+  await resolveAndValidateHostname(parsed.hostname);
 
-  for (
-    let redirectCount = 0;
-    redirectCount <= MAX_REDIRECTS;
-    redirectCount += 1
-  ) {
-    const normalized = normalizeUrl(currentUrl);
+  let response: Response;
 
-    if (visited.has(normalized)) {
-      throw new Error(`Redirect loop detected: ${currentUrl}`);
-    }
-
-    visited.add(normalized);
-
-    const parsed = new URL(currentUrl);
-
-    if (!isSafeUrl(currentUrl)) {
-      throw new Error(`Unsafe redirect URL: ${currentUrl}`);
-    }
-
-    await resolveAndValidateHostname(parsed.hostname);
-
-    let response: Response;
-
+  try {
+    response = await withTimeout(
+      fetch(rawUrl, {
+        method: "HEAD",
+        redirect: "manual",
+        headers: {
+          "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
+        },
+      }),
+      SCRAPE_TIMEOUT_MS,
+    );
+  } catch (headError) {
+    /**
+     * Some servers reject HEAD requests. A small GET request
+     * is used as the validation fallback.
+     */
     try {
       response = await withTimeout(
-        fetch(currentUrl, {
-          method: "HEAD",
+        fetch(rawUrl, {
+          method: "GET",
           redirect: "manual",
           headers: {
-            "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
+            Range: "bytes=0-0",
+            "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com",
           },
         }),
         SCRAPE_TIMEOUT_MS,
       );
-    } catch (headError) {
-      /**
-       * Some servers reject HEAD requests. A small GET request
-       * is used as the validation fallback.
-       */
-      try {
-        response = await withTimeout(
-          fetch(currentUrl, {
-            method: "GET",
-            redirect: "manual",
-            headers: {
-              Range: "bytes=0-0",
-              "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
-            },
-          }),
-          SCRAPE_TIMEOUT_MS,
-        );
-      } catch (getError) {
-        throw new TransientUrlValidationError(
-          `Transient URL validation probe failure: ${currentUrl}`,
-          { cause: getError ?? headError },
-        );
-      }
+    } catch (getError) {
+      throw new TransientUrlValidationError(
+        `Transient URL validation probe failure: ${rawUrl}`,
+        { cause: getError ?? headError },
+      );
     }
+  }
 
-    if (response.status < 300 || response.status >= 400) {
-      return;
-    }
+  /**
+   * Any 3xx response is deliberately rejected.
+   *
+   * We do not manually follow the redirect here because
+   * scrapeArticle() may follow redirects independently. Following
+   * them in this validator would therefore create a mismatch
+   * between the URL security decision and the actual request path.
+   */
+  if (response.status >= 300 && response.status < 400) {
+    const redirectUrl = getRedirectUrl(rawUrl, response);
 
-    const nextUrl = getRedirectUrl(currentUrl, response);
-
-    if (!nextUrl) {
+    if (redirectUrl) {
       throw new Error(
-        `Redirect response missing Location header: ${currentUrl}`,
+        `Redirecting article URL rejected: ${rawUrl} -> ${redirectUrl}`,
       );
     }
 
-    if (redirectCount === MAX_REDIRECTS) {
-      throw new Error(`Too many redirects: ${rawUrl}`);
-    }
-
-    currentUrl = nextUrl;
+    throw new Error(
+      `Redirecting article URL missing Location header: ${rawUrl}`,
+    );
   }
 }
 
@@ -1071,17 +1231,21 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
           aiResults.forEach((result, batchIndex) => {
             const aiBatch = aiBatches[batchIndex];
 
-            aiBatch.forEach((article: ScrapedArticle, articleIndex) => {
+            for (
+              let articleIndex = 0;
+              articleIndex < aiBatch.length;
+              articleIndex += 1
+            ) {
               const summary =
                 result.status === "fulfilled"
                   ? (result.value.summaries[articleIndex]?.summary ?? null)
                   : null;
 
               enrichedArticles.push({
-                article,
+                article: aiBatch[articleIndex],
                 summary: summary?.trim() ?? null,
               });
-            });
+            }
           });
 
           // ─────────────────────────────────────────────
