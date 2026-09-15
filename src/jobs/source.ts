@@ -66,15 +66,10 @@ export const FEEDS = [
     name: "NYTimes",
     url: "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
   },
-  { name: "France 24", url: "https://www.france24.com/en/rss" },
   { name: "NPR", url: "https://feeds.npr.org/1004/rss.xml" },
   {
     name: "The Conversation",
     url: "https://theconversation.com/global/articles.atom",
-  },
-  {
-    name: "Firstpost",
-    url: "https://www.firstpost.com/commonfeeds/v1/mfp/rss/world.xml",
   },
   { name: "The Guardian", url: "https://www.theguardian.com/world/rss" },
   { name: "UPI", url: "http://rss.upi.com/news/tn_int.rss" },
@@ -102,9 +97,7 @@ export const FEEDS = [
     url: "https://www.sciencedaily.com/rss/top/health.xml",
   },
   { name: "Men's Health", url: "https://www.menshealth.com/rss/all.xml" },
-  { name: "Medical Xpress", url: "https://medicalxpress.com/rss-feed/" },
   { name: "Kaiser Health News", url: "https://kffhealthnews.org/feed/" },
-  { name: "FierceBiotech", url: "https://www.fiercebiotech.com/rss/xml" },
   { name: "FierceHealthcare", url: "https://www.fiercehealthcare.com/rss/xml" },
   { name: "Science News", url: "https://www.sciencenews.org/feed" },
   { name: "TechCabal", url: "https://techcabal.com/feed/" },
@@ -117,7 +110,6 @@ export const FEEDS = [
   { name: "Wired", url: "https://www.wired.com/feed/rss" },
   { name: "Engadget", url: "https://www.engadget.com/rss.xml" },
   { name: "ZDNet", url: "https://www.zdnet.com/news/rss.xml" },
-  { name: "VentureBeat", url: "https://venturebeat.com/feed" },
   { name: "The Register", url: "https://www.theregister.com/headlines.atom" },
   {
     name: "Google News - Technology",

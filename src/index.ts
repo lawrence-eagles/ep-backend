@@ -44,10 +44,16 @@ app.use(cookieParser());
 
 // REQUIRED for better auth integration must be before express.json().
 app.all("/api/auth/*splat", toNodeHandler(auth));
-app.use(express.json());
 
+// Inngest endpoint.
+// Give Inngest its own JSON body limit because Inngest requests can
+// contain substantially more data than normal API requests.
+app.use("/api/inngest", express.json({ limit: "10mb" }));
 // 👇 REQUIRED endpoint for Inngest
 app.use("/api/inngest", inngestHandler);
+
+// Normal application JSON parser.
+app.use(express.json());
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });

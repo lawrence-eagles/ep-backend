@@ -974,144 +974,132 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
 
   async ({ step, logger }) => {
     // ───────────────────────────────────────────────────────
-    // STEP 1: FETCH RSS FEEDS
+    // STEP 1: FETCH + DEDUPLICATE EACH RSS FEED
     //
-    // FEED_CONCURRENCY is intentionally used here.
+    // IMPORTANT:
     //
-    // FEEDS is readonly, so we use its inferred Feed type
-    // rather than passing it to a mutable unknown[] helper.
+    // The previous implementation fetched every feed in one
+    // durable step and returned one potentially very large
+    // RawArticle[] payload. It then returned another large
+    // RawArticle[] from the deduplication step.
+    //
+    // Each feed is now an independent durable step. A single
+    // step can return at most MAX_ITEMS_PER_FEED (20) articles,
+    // so no durable step contains the entire RSS collection.
+    //
+    // FEED_CONCURRENCY still controls how many feed steps are
+    // scheduled concurrently.
+    //
+    // Redis + Postgres dedupe is performed in the same durable
+    // step as the feed fetch so we do not persist a second large
+    // RawArticle[] result.
     // ───────────────────────────────────────────────────────
 
-    const rawArticles = await step.run(
-      "fetch-rss-feeds",
-      async (): Promise<RawArticle[]> => {
-        const limit = pLimit(FEED_CONCURRENCY);
+    const feedLimit = pLimit(FEED_CONCURRENCY);
 
-        const feedResults = await Promise.allSettled(
-          (FEEDS as readonly Feed[]).map((feed: Feed) =>
-            limit(async (): Promise<RawArticle[]> => {
+    const feedResults = await Promise.all(
+      (FEEDS as readonly Feed[]).map((feed: Feed, feedIndex: number) =>
+        feedLimit(async (): Promise<RawArticle[]> => {
+          return step.run(
+            `fetch-and-dedupe-feed-${feedIndex}`,
+            async (): Promise<RawArticle[]> => {
+              let items: Parser.Item[];
+
               try {
-                const parsed = await RSS_PARSER.parseURL(feed.url);
-
-                return parsed.items
-                  .slice(0, MAX_ITEMS_PER_FEED)
-                  .map((item) => parseRssItem(item, feed.url))
-                  .filter((article): article is RawArticle => article !== null);
+                items = (await RSS_PARSER.parseURL(feed.url)).items;
               } catch (error) {
                 logger.warn(`Feed failed: ${feed.url}`, error);
 
                 return [];
               }
-            }),
-          ),
-        );
 
-        const results: RawArticle[] = [];
+              const articles = items
+                .slice(0, MAX_ITEMS_PER_FEED)
+                .map((item) => parseRssItem(item, feed.url))
+                .filter((article): article is RawArticle => article !== null);
 
-        feedResults.forEach((result, index) => {
-          if (result.status === "fulfilled") {
-            results.push(...result.value);
-          } else {
-            logger.warn(`Feed failed: ${FEEDS[index].url}`, result.reason);
-          }
-        });
+              if (!articles.length) {
+                return [];
+              }
 
-        return results;
-      },
+              // Memory dedupe is now scoped to this feed. Cross-feed
+              // duplicates are handled by Redis/Postgres below.
+              const memorySeen = new Set<string>();
+
+              const memoryDeduped = articles.filter((article: RawArticle) => {
+                if (memorySeen.has(article.url)) {
+                  return false;
+                }
+
+                memorySeen.add(article.url);
+
+                return true;
+              });
+
+              if (!memoryDeduped.length) {
+                return [];
+              }
+
+              const urls = memoryDeduped.map(
+                (article: RawArticle) => article.url,
+              );
+
+              const keys = urls.map(getDedupeKey);
+
+              const redisResults = await safeRedis(
+                (redis) => redis.mGet(keys),
+                new Array<string | null>(keys.length).fill(null),
+              );
+
+              const seen = new Set<string>();
+
+              redisResults.forEach((value, index) => {
+                const url = urls[index];
+
+                if (value !== null && url !== undefined) {
+                  seen.add(url);
+                }
+              });
+
+              const notSeen = memoryDeduped.filter(
+                (article: RawArticle) => !seen.has(article.url),
+              );
+
+              if (!notSeen.length) {
+                return [];
+              }
+
+              const existingSet = await findExistingUrls(
+                notSeen.map((article: RawArticle) => article.url),
+              );
+
+              return notSeen.filter(
+                (article: RawArticle) => !existingSet.has(article.url),
+              );
+            },
+          );
+        }),
+      ),
     );
 
-    if (!rawArticles.length) {
-      return {
-        processed: 0,
-        saved: 0,
-        failed: 0,
-      };
-    }
+    let totalProcessed = 0;
+    let totalSaved = 0;
+    let totalFailed = 0;
 
     // ───────────────────────────────────────────────────────
-    // MEMORY DEDUPE
-    // ───────────────────────────────────────────────────────
-
-    const memorySeen = new Set<string>();
-
-    const memoryDeduped = rawArticles.filter((article: RawArticle) => {
-      if (memorySeen.has(article.url)) {
-        return false;
-      }
-
-      memorySeen.add(article.url);
-
-      return true;
-    });
-
-    if (!memoryDeduped.length) {
-      return {
-        processed: 0,
-        saved: 0,
-        failed: 0,
-      };
-    }
-
-    // ───────────────────────────────────────────────────────
-    // STEP 2: REDIS + DATABASE DEDUPE
-    // ───────────────────────────────────────────────────────
-
-    const uniqueArticles = await step.run(
-      "deduplicate",
-      async (): Promise<RawArticle[]> => {
-        const urls = memoryDeduped.map((article: RawArticle) => article.url);
-
-        const keys = urls.map(getDedupeKey);
-
-        const redisResults = await safeRedis(
-          (redis) => redis.mGet(keys),
-
-          new Array<string | null>(keys.length).fill(null),
-        );
-
-        const seen = new Set<string>();
-
-        redisResults.forEach((value, index) => {
-          if (value !== null) {
-            seen.add(urls[index]);
-          }
-        });
-
-        const notSeen = memoryDeduped.filter(
-          (article: RawArticle) => !seen.has(article.url),
-        );
-
-        if (!notSeen.length) {
-          return [];
-        }
-
-        const existingSet = await findExistingUrls(
-          notSeen.map((article: RawArticle) => article.url),
-        );
-
-        return notSeen.filter(
-          (article: RawArticle) => !existingSet.has(article.url),
-        );
-      },
-    );
-
-    if (!uniqueArticles.length) {
-      return {
-        processed: 0,
-        saved: 0,
-        failed: 0,
-      };
-    }
-
-    // ───────────────────────────────────────────────────────
-    // PROCESS IN DURABLE BATCHES
+    // PROCESS EACH FEED'S SMALL RESULT IN DURABLE BATCHES
     //
     // IMPORTANT:
     //
-    // Full article content stays entirely inside each
+    // uniqueArticles is intentionally NOT built for the entire
+    // function run. Each feed result contains at most
+    // MAX_ITEMS_PER_FEED articles and is processed before moving
+    // to the next feed result.
+    //
+    // Full scraped article content stays entirely inside each
     // process-articles-N step.
     //
-    // The step returns ONLY:
+    // The process step returns ONLY:
     //
     //   processed
     //   savedPostIds
@@ -1121,321 +1109,320 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
     // Inngest step output.
     // ───────────────────────────────────────────────────────
 
-    const processBatches: RawArticle[][] = [];
+    for (let feedIndex = 0; feedIndex < feedResults.length; feedIndex += 1) {
+      const uniqueArticles = feedResults[feedIndex];
 
-    for (
-      let start = 0;
-      start < uniqueArticles.length;
-      start += PROCESS_BATCH_SIZE
-    ) {
-      processBatches.push(
-        uniqueArticles.slice(start, start + PROCESS_BATCH_SIZE),
-      );
-    }
+      if (!uniqueArticles || !uniqueArticles.length) {
+        continue;
+      }
 
-    let totalProcessed = 0;
-    let totalSaved = 0;
-    let totalFailed = 0;
+      for (
+        let start = 0, batchIndex = 0;
+        start < uniqueArticles.length;
+        start += PROCESS_BATCH_SIZE, batchIndex += 1
+      ) {
+        const batch = uniqueArticles.slice(start, start + PROCESS_BATCH_SIZE);
 
-    for (
-      let batchIndex = 0;
-      batchIndex < processBatches.length;
-      batchIndex += 1
-    ) {
-      const batch = processBatches[batchIndex];
+        const processResult = await step.run(
+          `process-articles-${feedIndex}-${batchIndex}`,
+          async (): Promise<ProcessBatchResult> => {
+            /**
+             * IMPORTANT:
+             *
+             * processed is the original chunk size.
+             *
+             * This preserves the existing behavior where rejected
+             * scrapes and content-quality drops are reflected in the
+             * aggregate counters.
+             */
+            const processed = batch.length;
 
-      const processResult = await step.run(
-        `process-articles-${batchIndex}`,
-        async (): Promise<ProcessBatchResult> => {
-          /**
-           * IMPORTANT:
-           *
-           * processed is the original chunk size.
-           *
-           * This fixes the CodeRabbit issue where rejected
-           * scrapes and content-quality drops disappeared
-           * from the aggregate counters.
-           */
-          const processed = batch.length;
+            const scrapeLimit = pLimit(SCRAPE_CONCURRENCY);
 
-          const scrapeLimit = pLimit(SCRAPE_CONCURRENCY);
+            const scrapeResults = await Promise.allSettled(
+              batch.map((article: RawArticle) =>
+                scrapeLimit(() => scrapeOneArticle(article)),
+              ),
+            );
 
-          const scrapeResults = await Promise.allSettled(
-            batch.map((article: RawArticle) =>
-              scrapeLimit(() => scrapeOneArticle(article)),
-            ),
-          );
+            const scrapedArticles: ScrapedArticle[] = [];
 
-          const scrapedArticles: ScrapedArticle[] = [];
-
-          for (const result of scrapeResults) {
-            if (result.status === "fulfilled") {
-              scrapedArticles.push(result.value);
+            for (const result of scrapeResults) {
+              if (result.status === "fulfilled") {
+                scrapedArticles.push(result.value);
+              }
             }
-          }
 
-          /**
-           * Content-quality failures are counted as failures
-           * because processed == batch.length.
-           */
-          const validArticles = scrapedArticles.filter(
-            (article: ScrapedArticle) => isValidContent(article.content),
-          );
+            /**
+             * Content-quality failures are counted as failures
+             * because processed == batch.length.
+             */
+            const validArticles = scrapedArticles.filter(
+              (article: ScrapedArticle) => isValidContent(article.content),
+            );
 
-          if (!validArticles.length) {
+            if (!validArticles.length) {
+              return {
+                processed,
+                savedPostIds: [],
+                failed: processed,
+              };
+            }
+
+            // ─────────────────────────────────────────────
+            // AI SUMMARIZATION
+            // ─────────────────────────────────────────────
+
+            const aiBatches: ScrapedArticle[][] = [];
+
+            for (
+              let start = 0;
+              start < validArticles.length;
+              start += AI_BATCH_SIZE
+            ) {
+              aiBatches.push(validArticles.slice(start, start + AI_BATCH_SIZE));
+            }
+
+            const aiLimit = pLimit(AI_BATCH_CONCURRENCY);
+
+            const aiResults = await Promise.allSettled(
+              aiBatches.map((aiBatch: ScrapedArticle[]) =>
+                aiLimit(async () => {
+                  const summaries = await batchSummarize(
+                    aiBatch.map(
+                      (article: ScrapedArticle) => article.content as string,
+                    ),
+                  );
+
+                  return {
+                    articles: aiBatch,
+                    summaries,
+                  };
+                }),
+              ),
+            );
+
+            const enrichedArticles: Array<{
+              article: ScrapedArticle;
+              summary: string | null;
+            }> = [];
+
+            aiResults.forEach((result, aiBatchIndex) => {
+              const aiBatch = aiBatches[aiBatchIndex];
+
+              if (!aiBatch) {
+                return;
+              }
+
+              for (
+                let articleIndex = 0;
+                articleIndex < aiBatch.length;
+                articleIndex += 1
+              ) {
+                const article = aiBatch[articleIndex];
+
+                if (!article) {
+                  continue;
+                }
+
+                const summary =
+                  result.status === "fulfilled"
+                    ? (result.value.summaries[articleIndex]?.summary ?? null)
+                    : null;
+
+                enrichedArticles.push({
+                  article,
+                  summary: summary?.trim() ?? null,
+                });
+              }
+            });
+
+            // ─────────────────────────────────────────────
+            // SAVE TO POSTGRES
+            // ─────────────────────────────────────────────
+
+            const saveLimit = pLimit(SAVE_CONCURRENCY);
+
+            const saveResults = await Promise.allSettled(
+              enrichedArticles.map(({ article, summary }) =>
+                saveLimit(async (): Promise<string | null> => {
+                  /**
+                   * No AI summary means this article
+                   * cannot become a post.
+                   */
+                  if (!summary) {
+                    return null;
+                  }
+
+                  const [source, categoryId] = await Promise.all([
+                    getOrCreateSource(article.feedUrl),
+
+                    detectCategoryId(
+                      `${article.title} ${article.content ?? ""}`,
+                    ),
+                  ]);
+
+                  const score = calculatePostScore({
+                    title: article.title,
+
+                    content: article.content ?? "",
+
+                    hasImage: !!article.imageUrl,
+
+                    createdAt: article.createdAt
+                      ? new Date(article.createdAt)
+                      : null,
+                  });
+
+                  const inserted = await insertPostWithUniqueSlug({
+                    title: article.title,
+
+                    description: summary,
+
+                    url: article.url,
+
+                    imageUrl: article.imageUrl,
+
+                    sourceId: source.id,
+
+                    categoryId,
+
+                    score,
+
+                    createdAt: article.createdAt
+                      ? new Date(article.createdAt)
+                      : new Date(),
+                  }).catch((error: unknown) => {
+                    logger.warn(
+                      `Failed to save article: ${article.url}`,
+                      error,
+                    );
+
+                    return null;
+                  });
+
+                  return inserted ? inserted.id : null;
+                }),
+              ),
+            );
+
+            const savedPostIds: string[] = [];
+
+            for (const result of saveResults) {
+              if (result.status === "fulfilled" && result.value !== null) {
+                savedPostIds.push(result.value);
+              }
+            }
+
+            /**
+             * Everything in the original batch that did not
+             * result in a saved post is considered failed.
+             *
+             * processed = batch.length
+             * saved = savedPostIds.length
+             * failed = processed - saved
+             */
             return {
               processed,
-              savedPostIds: [],
-              failed: processed,
+              savedPostIds,
+              failed: processed - savedPostIds.length,
             };
-          }
+          },
+        );
 
-          // ─────────────────────────────────────────────
-          // AI SUMMARIZATION
-          // ─────────────────────────────────────────────
+        totalProcessed += processResult.processed;
+        totalSaved += processResult.savedPostIds.length;
+        totalFailed += processResult.failed;
 
-          const aiBatches: ScrapedArticle[][] = [];
+        // ───────────────────────────────────────────────────
+        // SEND article.created FOR THIS BATCH ONLY
+        //
+        // We do NOT collect notification payloads for the
+        // entire function run.
+        // ───────────────────────────────────────────────────
+
+        if (processResult.savedPostIds.length > 0) {
+          const postIds = processResult.savedPostIds;
 
           for (
-            let start = 0;
-            start < validArticles.length;
-            start += AI_BATCH_SIZE
+            let start = 0, eventBatchIndex = 0;
+            start < postIds.length;
+            start += EVENT_BATCH_SIZE, eventBatchIndex += 1
           ) {
-            aiBatches.push(validArticles.slice(start, start + AI_BATCH_SIZE));
-          }
+            const eventPostIds = postIds.slice(start, start + EVENT_BATCH_SIZE);
 
-          const aiLimit = pLimit(AI_BATCH_CONCURRENCY);
+            /**
+             * Load the saved posts inside one durable step.
+             *
+             * The result is deliberately bounded to EVENT_BATCH_SIZE.
+             */
+            const savedPosts = await step.run(
+              `get-event-posts-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
+              async (): Promise<SavedPost[]> => {
+                const rows = await db
+                  .select({
+                    id: posts.id,
+                    categoryId: posts.categoryId,
+                    title: posts.title,
+                    description: posts.description,
+                    slug: posts.slug,
+                    url: posts.url,
+                  })
+                  .from(posts)
+                  .where(inArray(posts.id, eventPostIds));
 
-          const aiResults = await Promise.allSettled(
-            aiBatches.map((aiBatch: ScrapedArticle[]) =>
-              aiLimit(async () => {
-                const summaries = await batchSummarize(
-                  aiBatch.map(
-                    (article: ScrapedArticle) => article.content as string,
+                return rows;
+              },
+            );
+
+            if (!savedPosts.length) {
+              continue;
+            }
+
+            const events = savedPosts.map((post: SavedPost) => ({
+              id: `article-created-${post.id}`,
+
+              name: "article.created",
+
+              data: {
+                postId: post.id,
+
+                categoryId: post.categoryId,
+
+                title: post.title,
+
+                summary: post.description ?? "",
+
+                slug: post.slug,
+              } satisfies ArticleCreatedEventData,
+            }));
+
+            await step.sendEvent(
+              `send-article-created-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
+              events,
+            );
+
+            // ─────────────────────────────────────────────
+            // REDIS DEDUPE FOR THIS SAME BATCH
+            // ─────────────────────────────────────────────
+
+            await step.run(
+              `mark-redis-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
+              async (): Promise<{
+                marked: number;
+              }> => {
+                await Promise.all(
+                  savedPosts.map((post: SavedPost) =>
+                    safeRedisSet(getDedupeKey(post.url)),
                   ),
                 );
 
                 return {
-                  articles: aiBatch,
-                  summaries,
+                  marked: savedPosts.length,
                 };
-              }),
-            ),
-          );
-
-          const enrichedArticles: Array<{
-            article: ScrapedArticle;
-            summary: string | null;
-          }> = [];
-
-          aiResults.forEach((result, batchIndex) => {
-            const aiBatch = aiBatches[batchIndex];
-
-            for (
-              let articleIndex = 0;
-              articleIndex < aiBatch.length;
-              articleIndex += 1
-            ) {
-              const summary =
-                result.status === "fulfilled"
-                  ? (result.value.summaries[articleIndex]?.summary ?? null)
-                  : null;
-
-              enrichedArticles.push({
-                article: aiBatch[articleIndex],
-                summary: summary?.trim() ?? null,
-              });
-            }
-          });
-
-          // ─────────────────────────────────────────────
-          // SAVE TO POSTGRES
-          // ─────────────────────────────────────────────
-
-          const saveLimit = pLimit(SAVE_CONCURRENCY);
-
-          const saveResults = await Promise.allSettled(
-            enrichedArticles.map(({ article, summary }) =>
-              saveLimit(async (): Promise<string | null> => {
-                /**
-                 * No AI summary means this article
-                 * cannot become a post.
-                 */
-                if (!summary) {
-                  return null;
-                }
-
-                const [source, categoryId] = await Promise.all([
-                  getOrCreateSource(article.feedUrl),
-
-                  detectCategoryId(`${article.title} ${article.content ?? ""}`),
-                ]);
-
-                const score = calculatePostScore({
-                  title: article.title,
-
-                  content: article.content ?? "",
-
-                  hasImage: !!article.imageUrl,
-
-                  createdAt: article.createdAt
-                    ? new Date(article.createdAt)
-                    : null,
-                });
-
-                const inserted = await insertPostWithUniqueSlug({
-                  title: article.title,
-
-                  description: summary,
-
-                  url: article.url,
-
-                  imageUrl: article.imageUrl,
-
-                  sourceId: source.id,
-
-                  categoryId,
-
-                  score,
-
-                  createdAt: article.createdAt
-                    ? new Date(article.createdAt)
-                    : new Date(),
-                }).catch((error: unknown) => {
-                  logger.warn(`Failed to save article: ${article.url}`, error);
-
-                  return null;
-                });
-
-                return inserted ? inserted.id : null;
-              }),
-            ),
-          );
-
-          const savedPostIds: string[] = [];
-
-          for (const result of saveResults) {
-            if (result.status === "fulfilled" && result.value !== null) {
-              savedPostIds.push(result.value);
-            }
+              },
+            );
           }
-
-          /**
-           * Everything in the original batch that did not
-           * result in a saved post is considered failed.
-           *
-           * processed = batch.length
-           * saved = savedPostIds.length
-           * failed = processed - saved
-           */
-          return {
-            processed,
-            savedPostIds,
-            failed: processed - savedPostIds.length,
-          };
-        },
-      );
-
-      totalProcessed += processResult.processed;
-
-      totalSaved += processResult.savedPostIds.length;
-
-      totalFailed += processResult.failed;
-
-      // ───────────────────────────────────────────────────
-      // SEND article.created FOR THIS BATCH ONLY
-      //
-      // We do NOT collect notification payloads for the
-      // entire function run.
-      // ───────────────────────────────────────────────────
-
-      if (processResult.savedPostIds.length > 0) {
-        const postIds = processResult.savedPostIds;
-
-        const eventBatches: string[][] = [];
-
-        for (let start = 0; start < postIds.length; start += EVENT_BATCH_SIZE) {
-          eventBatches.push(postIds.slice(start, start + EVENT_BATCH_SIZE));
-        }
-
-        for (
-          let eventBatchIndex = 0;
-          eventBatchIndex < eventBatches.length;
-          eventBatchIndex += 1
-        ) {
-          const eventPostIds = eventBatches[eventBatchIndex];
-
-          /**
-           * Load the saved posts inside one durable step.
-           *
-           * The result is deliberately bounded to EVENT_BATCH_SIZE.
-           */
-          const savedPosts = await step.run(
-            `get-event-posts-${batchIndex}-${eventBatchIndex}`,
-            async (): Promise<SavedPost[]> => {
-              const rows = await db
-                .select({
-                  id: posts.id,
-                  categoryId: posts.categoryId,
-                  title: posts.title,
-                  description: posts.description,
-                  slug: posts.slug,
-                  url: posts.url,
-                })
-                .from(posts)
-                .where(inArray(posts.id, eventPostIds));
-
-              return rows;
-            },
-          );
-
-          if (!savedPosts.length) {
-            continue;
-          }
-
-          const events = savedPosts.map((post: SavedPost) => ({
-            id: `article-created-${post.id}`,
-
-            name: "article.created",
-
-            data: {
-              postId: post.id,
-
-              categoryId: post.categoryId,
-
-              title: post.title,
-
-              summary: post.description ?? "",
-
-              slug: post.slug,
-            } satisfies ArticleCreatedEventData,
-          }));
-
-          await step.sendEvent(
-            `send-article-created-${batchIndex}-${eventBatchIndex}`,
-            events,
-          );
-
-          // ─────────────────────────────────────────────
-          // REDIS DEDUPE FOR THIS SAME BATCH
-          // ─────────────────────────────────────────────
-
-          await step.run(
-            `mark-redis-${batchIndex}-${eventBatchIndex}`,
-            async (): Promise<{
-              marked: number;
-            }> => {
-              await Promise.all(
-                savedPosts.map((post: SavedPost) =>
-                  safeRedisSet(getDedupeKey(post.url)),
-                ),
-              );
-
-              return {
-                marked: savedPosts.length,
-              };
-            },
-          );
         }
       }
     }
