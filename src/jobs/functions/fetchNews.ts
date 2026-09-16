@@ -1109,10 +1109,40 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
     // Inngest step output.
     // ───────────────────────────────────────────────────────
 
-    for (let feedIndex = 0; feedIndex < feedResults.length; feedIndex += 1) {
-      const uniqueArticles = feedResults[feedIndex];
+    /**
+     * Run-scoped URL deduplication.
+     *
+     * Each feed performs its own Redis/Postgres dedupe before the
+     * feed results are returned. Because all feed steps complete
+     * before this processing loop starts, the same normalized URL
+     * can still legitimately appear in results from multiple feeds.
+     *
+     * `posts.url` is not protected by a database uniqueness
+     * constraint, so this in-memory set is required to guarantee
+     * that one fetch-news run cannot save the same article URL more
+     * than once, even when it appears in multiple RSS feeds.
+     */
+    const runScopedUrlSeen = new Set<string>();
 
-      if (!uniqueArticles || !uniqueArticles.length) {
+    for (let feedIndex = 0; feedIndex < feedResults.length; feedIndex += 1) {
+      const feedArticles = feedResults[feedIndex];
+
+      if (!feedArticles || !feedArticles.length) {
+        continue;
+      }
+
+      const uniqueArticles: RawArticle[] = [];
+
+      for (const article of feedArticles) {
+        if (runScopedUrlSeen.has(article.url)) {
+          continue;
+        }
+
+        runScopedUrlSeen.add(article.url);
+        uniqueArticles.push(article);
+      }
+
+      if (!uniqueArticles.length) {
         continue;
       }
 
