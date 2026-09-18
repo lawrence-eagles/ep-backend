@@ -13,46 +13,48 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_MODEL = "gpt-5.6-luna";
 
 /**
- * Your fetchNews.ts already sends 5 articles per batch.
+ * fetchNews.ts currently sends 5 articles per AI batch.
  *
- * This is kept as a defensive limit inside ai.ts as well, so this function
- * remains safe if another caller accidentally passes a larger array later.
- *
- * IMPORTANT:
- * This does NOT require any change to fetchNews.ts.
+ * This is also enforced here defensively so that another caller cannot
+ * accidentally create an oversized OpenAI request.
  */
 const MAX_ARTICLES_PER_REQUEST = 5;
 
 /**
- * Maximum amount of article text sent to OpenAI for each article.
+ * Maximum article content sent to OpenAI per article.
  *
- * This is the main input-token cost control.
- *
- * 1,500 characters is enough to give the model meaningful article context
- * while preventing unusually large scraped articles from creating expensive
- * requests.
+ * Keeping this bounded prevents unusually large scraped pages from creating
+ * unnecessarily expensive input requests.
  */
 const MAX_ARTICLE_CHARS = 1_500;
 
 /**
- * Maximum visible output budget allocated per article.
+ * Output budget allocated per article.
  *
- * The model is instructed to produce exactly four sentences, so 100 tokens
- * per article gives it enough room without allowing unnecessarily large
- * output.
+ * Each article must produce exactly 4 concise sentences plus the surrounding
+ * Structured Outputs JSON envelope.
+ *
+ * 150+ tokens/article gives the model considerably more room than the previous
+ * 100-token budget while remaining inexpensive for Eaglespress.
  */
-const OUTPUT_TOKENS_PER_ARTICLE = 100;
+const OUTPUT_TOKENS_PER_ARTICLE = 160;
 
 /**
- * Minimum output budget for a request.
+ * Minimum output budget for any request.
  *
- * This prevents very small batches from receiving an unnecessarily tiny
- * output budget.
+ * For a normal 5-article fetchNews.ts batch:
+ *
+ *   5 × 160 = 800
+ *
+ * Therefore a 5-article request receives 800 output tokens.
+ *
+ * This is intentionally above the previous 512-token budget, which could
+ * deterministically truncate a 5-article response.
  */
-const MIN_OUTPUT_TOKENS = 512;
+const MIN_OUTPUT_TOKENS = 800;
 
 /**
- * Individual OpenAI request timeout.
+ * Individual OpenAI HTTP request timeout.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -62,15 +64,19 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;
 
 /**
- * Initial exponential-backoff delay.
+ * Initial exponential backoff delay.
  *
- * Retry delays are approximately:
+ * Approximate retry delays:
  *
- * attempt 1 → immediate
- * attempt 2 → 500ms + jitter
- * attempt 3 → 1000ms + jitter
+ *   retry 1 → 500ms + jitter
+ *   retry 2 → 1000ms + jitter
  */
 const INITIAL_RETRY_DELAY_MS = 500;
+
+/**
+ * Maximum random jitter added to retry delays.
+ */
+const MAX_RETRY_JITTER_MS = 250;
 
 // ───────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -83,6 +89,17 @@ interface OpenAIErrorResponse {
     code?: string | null;
     param?: string | null;
   };
+}
+
+interface OpenAIOutputContent {
+  type?: string;
+  text?: string;
+  refusal?: string;
+}
+
+interface OpenAIOutputItem {
+  type?: string;
+  content?: OpenAIOutputContent[] | null;
 }
 
 interface OpenAIResponse {
@@ -99,19 +116,7 @@ interface OpenAIResponse {
     | "incomplete"
     | string;
 
-  /**
-   * Responses API provides the final generated text here.
-   *
-   * Because we use Structured Outputs, this contains JSON matching our
-   * supplied schema.
-   */
-  output?: Array<{
-    type?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }> | null;
-  }> | null;
+  output?: OpenAIOutputItem[] | null;
 
   error?: {
     code?: string;
@@ -138,8 +143,8 @@ interface OpenAIResponse {
 }
 
 /**
- * Internal error used to distinguish retryable OpenAI failures from
- * permanent failures.
+ * Internal error used to distinguish retryable failures from permanent
+ * failures.
  */
 class OpenAIRequestError extends Error {
   readonly retryable: boolean;
@@ -160,6 +165,8 @@ class OpenAIRequestError extends Error {
     this.retryable = options?.retryable ?? false;
     this.status = options?.status;
     this.retryAfterMs = options?.retryAfterMs;
+
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -168,17 +175,14 @@ class OpenAIRequestError extends Error {
 // ───────────────────────────────────────────────────────────────────────────────
 
 /**
- * Retry transient OpenAI/network failures using exponential backoff + jitter.
+ * Retry transient OpenAI/network failures using exponential backoff and
+ * jitter.
  *
- * Retryable HTTP statuses:
+ * IMPORTANT:
  *
- * 408 Request Timeout
- * 409 Conflict
- * 429 Rate Limited
- * 500 Internal Server Error
- * 502 Bad Gateway
- * 503 Service Unavailable
- * 504 Gateway Timeout
+ * A response that is incomplete specifically because max_output_tokens was
+ * reached is NOT retryable. Sending the exact same request with the exact same
+ * output limit would deterministically produce the same truncation.
  */
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -193,12 +197,7 @@ async function withRetry<T>(
       lastError = error;
 
       const retryable =
-        error instanceof OpenAIRequestError
-          ? error.retryable
-          : typeof error === "object" &&
-            error !== null &&
-            "retryable" in error &&
-            (error as { retryable?: boolean }).retryable === true;
+        error instanceof OpenAIRequestError ? error.retryable : false;
 
       if (!retryable) {
         throw error;
@@ -213,11 +212,7 @@ async function withRetry<T>(
 
       const exponentialDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
 
-      /**
-       * Jitter prevents concurrent Inngest AI batches from all retrying
-       * simultaneously.
-       */
-      const jitter = Math.floor(Math.random() * 250);
+      const jitter = Math.floor(Math.random() * (MAX_RETRY_JITTER_MS + 1));
 
       const delay = Math.max(retryAfterMs ?? 0, exponentialDelay + jitter);
 
@@ -234,7 +229,9 @@ async function withRetry<T>(
     }
   }
 
-  throw lastError;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("OpenAI request failed after retries");
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -244,11 +241,11 @@ async function withRetry<T>(
 /**
  * Parse OpenAI's Retry-After header.
  *
- * OpenAI may provide either:
+ * Supports both:
  *
  *   Retry-After: 5
  *
- * or an HTTP date.
+ * and HTTP-date values.
  */
 function getRetryAfterMs(response: Response): number | undefined {
   const retryAfter = response.headers.get("retry-after");
@@ -273,17 +270,17 @@ function getRetryAfterMs(response: Response): number | undefined {
 }
 
 /**
- * Limit article content before it is sent to OpenAI.
+ * Limit article content before sending it to OpenAI.
  */
 function trimArticle(content: string): string {
   return content.slice(0, MAX_ARTICLE_CHARS);
 }
 
 /**
- * Full-batch fallback requested for Eaglespress.
+ * Create the full-batch fallback requested by Eaglespress.
  *
  * IMPORTANT:
- * This intentionally uses 500 characters rather than 200.
+ * This intentionally uses 500 characters.
  */
 function createFallbackSummary(content: string, index: number): SummaryResult {
   return {
@@ -292,19 +289,68 @@ function createFallbackSummary(content: string, index: number): SummaryResult {
   };
 }
 
+/**
+ * Safely extract generated text from the raw Responses API response.
+ *
+ * With fetch(), we receive the raw JSON response. We therefore explicitly
+ * traverse:
+ *
+ * response.output[]
+ *   → message
+ *   → content[]
+ *   → output_text
+ *   → text
+ *
+ * We do not rely on an SDK-created `output_text` convenience property.
+ */
+function extractOutputText(data: OpenAIResponse): string {
+  const output = data.output ?? [];
+
+  const text = output
+    .filter((item) => item.type === "message")
+    .flatMap((item) => item.content ?? [])
+    .filter((part) => part.type === "output_text")
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+
+  return text;
+}
+
+/**
+ * Detect a model refusal in the Responses API output.
+ */
+function extractRefusal(data: OpenAIResponse): string | undefined {
+  const output = data.output ?? [];
+
+  for (const item of output) {
+    for (const part of item.content ?? []) {
+      if (part.type === "refusal" && part.refusal) {
+        return part.refusal;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // STRUCTURED OUTPUT SCHEMA
 // ───────────────────────────────────────────────────────────────────────────────
 
 /**
- * Structured Outputs schema.
+ * Structured Outputs JSON schema.
  *
- * We deliberately do not put minItems/maxItems or numeric minimum/maximum
- * constraints into this schema. The application validates those properties
- * after receiving the response.
+ * The application performs additional validation after parsing the response.
  *
- * This keeps the schema simple and compatible with the supported Structured
- * Outputs JSON Schema subset.
+ * We intentionally keep the JSON Schema simple and avoid unnecessary schema
+ * constraints that are not needed because the application validates:
+ *
+ * - article count
+ * - indexes
+ * - duplicate indexes
+ * - missing indexes
+ * - non-empty summaries
  */
 function createSummarySchema() {
   return {
@@ -355,17 +401,17 @@ For each article:
 3. Preserve important facts, names, organizations, events, numbers, dates, and relevant context.
 4. Do not invent facts.
 5. Do not speculate.
-6. Do not add opinions that are not present in the article.
+6. Do not add opinions that are not supported by the article.
 7. Do not use clickbait language.
 8. Do not mention that you are an AI.
 9. Do not combine multiple articles into one summary.
 10. Do not skip any article.
-11. Each result's index must correspond to the supplied article number.
+11. The index must correspond to the supplied article number.
 12. Produce exactly ${articleCount} summaries.
 
 The summaries should be useful to a reader who has not read the original article.
 
-The output must conform exactly to the supplied structured-output JSON schema.
+Return the result using exactly the supplied Structured Outputs schema.
 `.trim();
 }
 
@@ -497,7 +543,7 @@ function validateSummaries(
   }
 
   /**
-   * Return in original input order rather than trusting the model's ordering.
+   * Normalize the result into the original article order.
    */
   return Array.from({ length: articleCount }, (_, offset) => {
     const index = offset + 1;
@@ -533,10 +579,13 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
   const userPrompt = buildUserPrompt(contents);
 
   /**
-   * Four sentences per article normally fit well below this limit.
+   * Calculate an output budget based on article count.
    *
-   * GPT-5.6 Luna's max output is much larger, but there is no reason for
-   * Eaglespress to allow an article-summary request to generate huge output.
+   * For the normal 5-article batch:
+   *
+   *   5 × 160 = 800
+   *
+   * Therefore the request receives 800 output tokens.
    */
   const maxOutputTokens = Math.max(
     contents.length * OUTPUT_TOKENS_PER_ARTICLE,
@@ -546,10 +595,13 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
   return withRetry(async () => {
     let response: Response;
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // REQUEST
+    // ─────────────────────────────────────────────────────────────────────────
+
     try {
       response = await fetch(OPENAI_RESPONSES_URL, {
         method: "POST",
-
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 
         headers: {
@@ -561,42 +613,33 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
           model: OPENAI_MODEL,
 
           /**
-           * Summarization does not need deliberate multi-step reasoning.
-           *
-           * Using "none" minimizes unnecessary reasoning overhead and is
-           * appropriate for this high-volume task.
+           * Article summarization does not require deliberate multi-step
+           * reasoning. `none` reduces unnecessary reasoning overhead and
+           * keeps this high-volume workload efficient.
            */
           reasoning: {
             effort: "none",
           },
 
           /**
-           * Eaglespress stores the generated summary in PostgreSQL.
-           *
-           * There is no need for OpenAI to retain the response for a future
-           * conversation turn.
+           * Eaglespress persists the resulting summary itself, so there is
+           * no need to store the OpenAI response for later retrieval.
            */
           store: false,
 
           /**
-           * Responses API instructions replace the old Chat Completions
-           * system message.
+           * Responses API equivalent of a system message.
            */
           instructions: systemPrompt,
 
           /**
-           * The article batch itself.
+           * Article batch.
            */
           input: userPrompt,
 
           /**
-           * Structured Outputs.
-           *
-           * This replaces the old:
-           *
-           * "Return ONLY valid JSON"
-           *
-           * prompt-based approach.
+           * Structured Outputs guarantees that the model's successful
+           * response conforms to our supplied JSON schema.
            */
           text: {
             format: {
@@ -608,21 +651,21 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
           },
 
           /**
-           * Hard output-cost/size boundary.
+           * Hard output boundary.
            */
           max_output_tokens: maxOutputTokens,
         }),
       });
     } catch (error) {
       /**
-       * fetch() itself failed.
+       * Network-level failures are retryable.
        *
        * Examples:
        * - DNS failure
        * - connection reset
        * - socket failure
-       * - network interruption
        * - request timeout
+       * - temporary network interruption
        */
       throw new OpenAIRequestError(
         `OpenAI network request failed: ${
@@ -651,12 +694,15 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
         }
       } catch {
         /**
-         * Response wasn't JSON.
+         * The server returned a non-JSON error body.
          *
-         * Keep the original body.
+         * Keep the original response body.
          */
       }
 
+      /**
+       * These statuses are considered transient for this workload.
+       */
       const retryableStatuses = new Set([408, 409, 429, 500, 502, 503, 504]);
 
       throw new OpenAIRequestError(
@@ -671,26 +717,56 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PARSE RESPONSE
+    // RESPONSE PARSING
     // ─────────────────────────────────────────────────────────────────────────
 
-    const data = (await response.json()) as OpenAIResponse;
+    let data: OpenAIResponse;
 
-    /**
-     * We expect a completed Responses API response.
-     */
+    try {
+      data = (await response.json()) as OpenAIResponse;
+    } catch (error) {
+      /**
+       * A successful HTTP response that cannot be parsed as JSON is treated
+       * as transient because the response itself may have been corrupted or
+       * interrupted.
+       */
+      throw new OpenAIRequestError(
+        `Failed to parse OpenAI response JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        {
+          retryable: true,
+        },
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // RESPONSE STATUS
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (data.status !== "completed") {
+      const incompleteReason = data.incomplete_details?.reason;
+
       const message =
         data.error?.message ??
-        data.incomplete_details?.reason ??
-        `OpenAI response status was "${data.status}"`;
+        (incompleteReason
+          ? `OpenAI response incomplete: ${incompleteReason}`
+          : `OpenAI response status was "${data.status}"`);
 
       /**
-       * These statuses may be transient.
+       * IMPORTANT:
+       *
+       * `incomplete + max_output_tokens` is deterministic.
+       *
+       * Retrying the same request with the same max_output_tokens would send
+       * the same request again and can produce the same truncation while
+       * unnecessarily increasing API cost.
+       *
+       * Therefore it is explicitly NON-RETRYABLE.
        */
       const retryable =
         (data.status === "incomplete" &&
-          data.incomplete_details?.reason !== "max_output_tokens") ||
+          incompleteReason !== "max_output_tokens") ||
         data.status === "in_progress" ||
         data.status === "queued";
 
@@ -699,19 +775,41 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
       });
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // REFUSAL HANDLING
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const refusal = extractRefusal(data);
+
+    if (refusal) {
+      /**
+       * A refusal is not normally solved by sending the exact same request
+       * again, so do not spend additional tokens retrying it.
+       */
+      throw new OpenAIRequestError(
+        `OpenAI refused the summarization request: ${refusal}`,
+        {
+          retryable: false,
+        },
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EXTRACT GENERATED TEXT
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Responses API exposes the generated text through output_text.
+     * With raw fetch() calls, explicitly traverse the Responses API output:
      *
-     * Because Structured Outputs is enabled, this should contain JSON
-     * conforming to our schema.
+     * output[]
+     *   → message
+     *   → content[]
+     *   → output_text
+     *   → text
+     *
+     * Do NOT use data.output_text here.
      */
-    const raw = (data.output ?? [])
-      .filter((item) => item.type === "message")
-      .flatMap((item) => item.content ?? [])
-      .filter((part) => part.type === "output_text")
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
+    const raw = extractOutputText(data);
 
     if (!raw) {
       throw new OpenAIRequestError("OpenAI returned empty output text", {
@@ -729,10 +827,10 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
       parsed = JSON.parse(raw);
     } catch (error) {
       /**
-       * Structured Outputs should prevent malformed JSON.
+       * Structured Outputs should normally prevent malformed JSON.
        *
-       * This defensive check protects the pipeline if the API ever returns
-       * an unexpected response.
+       * Keep this defensive retry because an unexpected malformed response
+       * may be transient.
        */
       throw new OpenAIRequestError(
         `Failed to parse OpenAI structured output as JSON: ${
@@ -763,13 +861,15 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
  *
  *   batchSummarize(contents: string[]): Promise<SummaryResult[]>
  *
- * This matches the existing fetchNews.ts pipeline exactly:
+ * This matches the existing fetchNews.ts pipeline:
  *
  *   const summaries = await batchSummarize(
- *     aiBatch.map((article) => article.content as string),
+ *     aiBatch.map(
+ *       (article: ScrapedArticle) => article.content as string,
+ *     ),
  *   );
  *
- * No fetchNews.ts changes are required.
+ * Therefore fetchNews.ts does not need to change.
  */
 export async function batchSummarize(
   contents: string[],
@@ -779,13 +879,10 @@ export async function batchSummarize(
   }
 
   /**
-   * Normally fetchNews.ts sends exactly 5 articles here because:
+   * Defensive internal batching.
    *
-   *   AI_BATCH_SIZE = 5
-   *
-   * We still protect the function against a larger array.
-   *
-   * Each internal request contains at most 5 articles.
+   * fetchNews.ts already sends 5 articles per batch, but this protects this
+   * function if another caller passes more than 5.
    */
   const requestBatches: string[][] = [];
 
@@ -805,16 +902,12 @@ export async function batchSummarize(
     /**
      * Process internal batches sequentially.
      *
-     * IMPORTANT:
+     * fetchNews.ts already controls concurrency with:
      *
-     * fetchNews.ts already runs up to 3 batchSummarize() calls concurrently.
-     * Therefore we intentionally do NOT add another concurrency layer here.
+     *   AI_BATCH_CONCURRENCY = 3
      *
-     * This prevents multiplying:
-     *
-     *   fetchNews concurrency × ai.ts concurrency
-     *
-     * and accidentally generating too many simultaneous OpenAI requests.
+     * Adding another concurrency layer here would multiply the number of
+     * simultaneous OpenAI requests.
      */
     for (const requestBatch of requestBatches) {
       const batchResults = await summarizeBatch(requestBatch);
@@ -823,10 +916,7 @@ export async function batchSummarize(
     }
 
     /**
-     * summarizeBatch() indexes each internal request starting at 1.
-     *
-     * Convert those indexes back to the indexes of the original contents
-     * array.
+     * Re-index results against the original contents array.
      */
     const normalizedResults: SummaryResult[] = [];
 
@@ -857,20 +947,15 @@ export async function batchSummarize(
     return normalizedResults;
   } catch (error) {
     // ─────────────────────────────────────────────────────────────────────────
-    // FULL BATCH FALLBACK
+    // FULL-BATCH FALLBACK
     // ─────────────────────────────────────────────────────────────────────────
     //
     // IMPORTANT:
     //
-    // Preserve the original Eaglespress behavior:
-    //
-    // 1. Log the REAL error.
-    // 2. Do NOT throw it back into fetchNews.ts.
-    // 3. Return one fallback result for EVERY article.
-    // 4. Use content.slice(0, 500).
-    //
-    // This means a temporary OpenAI failure does not crash the entire
-    // fetch-news Inngest step.
+    // 1. Log the actual error.
+    // 2. Do not throw the error into fetchNews.ts.
+    // 3. Return one fallback for every article.
+    // 4. Use the requested 500-character fallback.
     // ─────────────────────────────────────────────────────────────────────────
 
     console.error("[ai] batchSummarize failed after retries:", error);
