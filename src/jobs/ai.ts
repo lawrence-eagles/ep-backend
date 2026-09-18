@@ -105,7 +105,13 @@ interface OpenAIResponse {
    * Because we use Structured Outputs, this contains JSON matching our
    * supplied schema.
    */
-  output_text?: string;
+  output?: Array<{
+    type?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }> | null;
+  }> | null;
 
   error?: {
     code?: string;
@@ -683,7 +689,8 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
        * These statuses may be transient.
        */
       const retryable =
-        data.status === "incomplete" ||
+        (data.status === "incomplete" &&
+          data.incomplete_details?.reason !== "max_output_tokens") ||
         data.status === "in_progress" ||
         data.status === "queued";
 
@@ -698,10 +705,16 @@ async function summarizeBatch(contents: string[]): Promise<SummaryResult[]> {
      * Because Structured Outputs is enabled, this should contain JSON
      * conforming to our schema.
      */
-    const raw = data.output_text?.trim();
+    const raw = (data.output ?? [])
+      .filter((item) => item.type === "message")
+      .flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === "output_text")
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
 
     if (!raw) {
-      throw new OpenAIRequestError("OpenAI returned empty output_text", {
+      throw new OpenAIRequestError("OpenAI returned empty output text", {
         retryable: true,
       });
     }
