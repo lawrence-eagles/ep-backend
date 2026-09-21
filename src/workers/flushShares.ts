@@ -18,7 +18,6 @@ const LOCK_KEY = "lock:flushShares";
  * If flushShares can legitimately take longer than this, increase the
  * TTL or implement lock renewal.
  */
-// const LOCK_TTL = 300; // 5 minutes
 const LOCK_TTL = 35 * 60; // 35 minutes
 
 /**

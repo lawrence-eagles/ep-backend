@@ -78,6 +78,21 @@ const INITIAL_RETRY_DELAY_MS = 500;
  */
 const MAX_RETRY_JITTER_MS = 250;
 
+/**
+ * Maximum amount of time this module will wait for an OpenAI Retry-After
+ * value inside a single application request.
+ *
+ * OpenAI can return a very large Retry-After value when an organization has
+ * exhausted its token-per-minute allowance. Sleeping for hours inside an
+ * Inngest step keeps the HTTP request open and can cause the hosting proxy to
+ * return a 502 before the Inngest SDK can respond.
+ *
+ * Long rate-limit recovery belongs to a later Inngest invocation rather than
+ * an in-process timer, so values above this limit are treated as non-retryable
+ * for the current request.
+ */
+const MAX_RETRY_AFTER_MS = 10_000;
+
 // ───────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ───────────────────────────────────────────────────────────────────────────────
@@ -210,11 +225,36 @@ async function withRetry<T>(
       const retryAfterMs =
         error instanceof OpenAIRequestError ? error.retryAfterMs : undefined;
 
+      /**
+       * Never keep the process alive for a long OpenAI rate-limit window.
+       *
+       * This is especially important for 429 TPM limits. A Retry-After value
+       * can legitimately be hours long, but waiting that long inside this
+       * function does not help the current Inngest invocation and can cause
+       * the upstream HTTP request to expire with a 502.
+       *
+       * The caller already has a full-batch fallback, so a long rate-limit
+       * response should fail fast and let the current batch degrade safely.
+       */
+      if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
+        console.warn(
+          `[ai] OpenAI requested a retry after ${retryAfterMs}ms, ` +
+            `which exceeds the ${MAX_RETRY_AFTER_MS}ms in-process retry limit. ` +
+            `Skipping the retry so the batch can use its fallback.`,
+          error,
+        );
+
+        throw error;
+      }
+
       const exponentialDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
 
       const jitter = Math.floor(Math.random() * (MAX_RETRY_JITTER_MS + 1));
 
-      const delay = Math.max(retryAfterMs ?? 0, exponentialDelay + jitter);
+      const delay = Math.min(
+        MAX_RETRY_AFTER_MS,
+        Math.max(retryAfterMs ?? 0, exponentialDelay + jitter),
+      );
 
       console.warn(
         `[ai] OpenAI request failed ` +

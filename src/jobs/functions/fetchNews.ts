@@ -44,12 +44,12 @@ const SCRAPE_CONCURRENCY = 5;
 /**
  * Number of article contents sent to the AI summarizer at once.
  */
-const AI_BATCH_SIZE = 5;
+const AI_BATCH_SIZE = 3;
 
 /**
  * Maximum number of AI batches executing concurrently.
  */
-const AI_BATCH_CONCURRENCY = 3;
+const AI_BATCH_CONCURRENCY = 1;
 
 /**
  * Maximum number of database saves executing concurrently.
