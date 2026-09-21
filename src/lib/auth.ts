@@ -7,7 +7,7 @@ import VerifyEmail from "../emails/verifyEmail";
 import ForgotPasswordEmail from "../emails/forgotPasswordEmail";
 import DeleteAccountEmail from "../emails/DeleteAccountEmail";
 import { db } from "../db"; // your drizzle instance
-import { schema } from "../db/schema"; // the schema exported as const.
+import { schema } from "../db"; // the schema exported as const.
 import { getEnv } from "../lib/env";
 
 const env = getEnv();

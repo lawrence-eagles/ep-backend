@@ -768,5 +768,3 @@ export const userBehaviorRelations = relations(userBehavior, ({ one }) => ({
     references: [categories.id],
   }),
 }));
-
-// export const schema = { user, session, account, verification };
