@@ -769,4 +769,4 @@ export const userBehaviorRelations = relations(userBehavior, ({ one }) => ({
   }),
 }));
 
-export const schema = { user, session, account, verification };
+// export const schema = { user, session, account, verification };
