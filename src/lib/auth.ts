@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { inngest } from "../lib/inngest";
 import { betterAuth } from "better-auth";
 import { expo } from "@better-auth/expo";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";

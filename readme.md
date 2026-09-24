@@ -451,10 +451,3 @@ timeouts: {
       start: "55s",
     },
  -->
-
-<!--
-The inngest function to change to twice daily is relayPendingUserDeletions
-{
-  cron: "0 6,18 * * *",
-}
- -->
