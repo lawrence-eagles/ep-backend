@@ -38,143 +38,142 @@ export const relayPendingUserDeletions: InngestFunction.Any =
     },
 
     async ({ step }) => {
-      /**
-       * Find confirmed deletions that have not yet been successfully
-       * externalized to R2.
-       *
-       * The outbox remains "pending" until externalizeUserDeletion
-       * successfully:
-       *
-       * 1. Writes the deletion record to R2.
-       * 2. Marks the outbox row as "processed".
-       *
-       * Therefore, a failed R2 operation leaves the outbox row
-       * available for a later relay run.
-       */
-      const pendingDeletions: PendingDeletion[] = await step.run(
-        "find-pending-user-deletions",
-        async (): Promise<PendingDeletion[]> => {
-          return db
-            .select({
-              deletionId: deletionLedger.deletionId,
-              userId: deletionLedger.userId,
-              deletedAt: deletionLedger.deletedAt,
-            })
-            .from(deletionOutbox)
-            .innerJoin(
-              deletionLedger,
-              eq(deletionOutbox.deletionId, deletionLedger.deletionId),
-            )
-            .where(
-              and(
-                eq(deletionOutbox.status, "pending"),
-                eq(deletionLedger.status, "confirmed"),
-              ),
-            )
-            .orderBy(asc(deletionLedger.confirmedAt))
-            .limit(DELETION_RELAY_BATCH_SIZE);
-        },
-      );
-
-      if (pendingDeletions.length === 0) {
-        return {
-          success: true,
-          dispatched: 0,
-        };
-      }
+      let totalDispatched = 0;
+      let batchNumber = 0;
 
       /**
-       * Validate every pending deletion before dispatching.
+       * Continue processing batches until there are no more
+       * confirmed deletions waiting in the outbox.
        *
-       * A confirmed deletion must have deletedAt because that
-       * timestamp is required by the external deletion ledger
-       * stored in R2.
-       *
-       * We create a new array containing only validated records.
-       * This gives the dispatch code a properly narrowed type:
-       *
-       * deletedAt: Date
-       *
-       * rather than:
-       *
-       * deletedAt: Date | null
+       * This prevents a maximum throughput of only
+       * 100 deletions per cron execution.
        */
-      const validatedDeletions: ValidatedPendingDeletion[] =
-        pendingDeletions.map(
-          (deletion: PendingDeletion): ValidatedPendingDeletion => {
-            if (!deletion.deletedAt) {
-              throw new Error(
-                `Confirmed deletion is missing deletedAt. ` +
-                  `DeletionId=${deletion.deletionId}, ` +
-                  `UserId=${deletion.userId}`,
-              );
-            }
-
-            return {
-              deletionId: deletion.deletionId,
-              userId: deletion.userId,
-              deletedAt: deletion.deletedAt,
-            };
+      while (true) {
+        const pendingDeletions: PendingDeletion[] = await step.run(
+          `find-pending-user-deletions-${batchNumber}`,
+          async (): Promise<PendingDeletion[]> => {
+            return db
+              .select({
+                deletionId: deletionLedger.deletionId,
+                userId: deletionLedger.userId,
+                deletedAt: deletionLedger.deletedAt,
+              })
+              .from(deletionOutbox)
+              .innerJoin(
+                deletionLedger,
+                eq(deletionOutbox.deletionId, deletionLedger.deletionId),
+              )
+              .where(
+                and(
+                  eq(deletionOutbox.status, "pending"),
+                  eq(deletionLedger.status, "confirmed"),
+                ),
+              )
+              .orderBy(asc(deletionLedger.confirmedAt))
+              .limit(DELETION_RELAY_BATCH_SIZE);
           },
         );
 
-      /**
-       * Dispatch the validated deletions.
-       *
-       * Each event receives a deterministic ID derived from the
-       * deletionId.
-       *
-       * This is important because the outbox row remains "pending"
-       * until externalizeUserDeletion finishes.
-       *
-       * If the R2 operation is slow or temporarily failing, a later
-       * relay execution can encounter the same pending row.
-       *
-       * Using a deterministic event ID allows Inngest to deduplicate
-       * repeated sends of the same deletion event within its
-       * deduplication window.
-       *
-       * The outbox is NOT marked as processed here.
-       *
-       * externalizeUserDeletion is responsible for marking the
-       * outbox row as processed after the R2 write succeeds.
-       */
-      const dispatched = await step.run(
-        "dispatch-pending-user-deletions",
-        async () => {
-          const events = validatedDeletions.map(
-            (deletion: ValidatedPendingDeletion) => ({
-              name: "user.deletion.externalize" as const,
+        /**
+         * No more pending deletions.
+         *
+         * The relay has completely drained the outbox.
+         */
+        if (pendingDeletions.length === 0) {
+          break;
+        }
 
-              /**
-               * Deterministic event ID.
-               *
-               * deletionId is globally unique, so it is suitable
-               * for identifying this specific deletion event.
-               */
-              id: `user-deletion-externalize-${deletion.deletionId}`,
+        /**
+         * Validate every deletion before dispatching the batch.
+         *
+         * A confirmed deletion must have deletedAt because that
+         * timestamp is required by the external deletion ledger
+         * stored in R2.
+         */
+        const validatedDeletions: ValidatedPendingDeletion[] =
+          pendingDeletions.map(
+            (deletion: PendingDeletion): ValidatedPendingDeletion => {
+              if (!deletion.deletedAt) {
+                throw new Error(
+                  `Confirmed deletion is missing deletedAt. ` +
+                    `DeletionId=${deletion.deletionId}, ` +
+                    `UserId=${deletion.userId}`,
+                );
+              }
 
-              data: {
+              return {
                 deletionId: deletion.deletionId,
                 userId: deletion.userId,
                 deletedAt: deletion.deletedAt,
-              },
-            }),
+              };
+            },
           );
 
-          /**
-           * Send the entire batch in one Inngest request instead
-           * of making up to 100 sequential inngest.send() calls.
-           */
-          await inngest.send(events);
+        /**
+         * Dispatch the current batch.
+         *
+         * Every event has a deterministic ID based on deletionId.
+         *
+         * This is important because the outbox row remains "pending"
+         * until externalizeUserDeletion successfully writes the
+         * deletion record to R2 and marks the outbox row as processed.
+         *
+         * If this relay function is retried, the same deletion can
+         * safely be dispatched again because the event ID remains
+         * deterministic.
+         */
+        const dispatched = await step.run(
+          `dispatch-pending-user-deletions-${batchNumber}`,
+          async () => {
+            const events = validatedDeletions.map(
+              (deletion: ValidatedPendingDeletion) => ({
+                name: "user.deletion.externalize" as const,
 
-          return events.length;
-        },
-      );
+                /**
+                 * Deterministic event ID.
+                 *
+                 * deletionId is globally unique, so it provides
+                 * a stable identity for this deletion event.
+                 */
+                id: `user-deletion-externalize-${deletion.deletionId}`,
+
+                data: {
+                  deletionId: deletion.deletionId,
+                  userId: deletion.userId,
+                  deletedAt: deletion.deletedAt,
+                },
+              }),
+            );
+
+            /**
+             * Send the entire batch in one Inngest request.
+             */
+            await inngest.send(events);
+
+            return events.length;
+          },
+        );
+
+        totalDispatched += dispatched;
+        batchNumber += 1;
+
+        /**
+         * If fewer than the maximum batch size were returned,
+         * there cannot be another row after this batch under the
+         * current query state.
+         *
+         * We can finish immediately instead of performing one
+         * unnecessary database query.
+         */
+        if (pendingDeletions.length < DELETION_RELAY_BATCH_SIZE) {
+          break;
+        }
+      }
 
       return {
         success: true,
-        dispatched,
+        dispatched: totalDispatched,
+        batches: batchNumber,
       };
     },
   );
