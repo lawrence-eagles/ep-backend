@@ -7,7 +7,7 @@ import { markDeletionOutboxProcessed } from "../../services/deletionLedger/delet
 const userDeletionExternalizeEventSchema = z.object({
   deletionId: z.string().min(1),
   userId: z.string().min(1),
-  deletedAt: z.coerce.date(),
+  deletedAt: z.iso.datetime().transform((value) => new Date(value)),
 });
 
 export const externalizeUserDeletion: InngestFunction.Any =

@@ -117,16 +117,7 @@ export const auth = betterAuth({
         },
 
         after: async (user) => {
-          const deletion = await confirmDeletion(user.id);
-
-          await inngest.send({
-            name: "user.deletion.externalize",
-            data: {
-              deletionId: deletion.deletionId,
-              userId: deletion.userId,
-              deletedAt: deletion.deletedAt,
-            },
-          });
+          await confirmDeletion(user.id);
         },
       },
     },

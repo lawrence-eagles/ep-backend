@@ -8,6 +8,7 @@ import { enqueueNotification } from "../jobs/functions/enqueueNotification";
 import { flushBatch } from "../jobs/functions/flushBatchNotification";
 import { cleanupDeviceTokens } from "../jobs/functions/cleanupDeviceTokens";
 import { externalizeUserDeletion } from "../jobs/functions/externalizeUserDeletion";
+import { relayPendingUserDeletions } from "../jobs/functions/relayPendingUserDeletions";
 
 export const inngestHandler = serve({
   client: inngest,
@@ -20,5 +21,6 @@ export const inngestHandler = serve({
     enqueueNotification,
     flushBatch,
     cleanupDeviceTokens,
+    relayPendingUserDeletions,
   ],
 });
