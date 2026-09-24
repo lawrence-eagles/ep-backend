@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { inngest } from "../lib/inngest";
 import { betterAuth } from "better-auth";
 import { expo } from "@better-auth/expo";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -9,6 +10,8 @@ import DeleteAccountEmail from "../emails/DeleteAccountEmail";
 import { db } from "../db"; // your drizzle instance
 import { schema } from "../db"; // the schema exported as const.
 import { getEnv } from "../lib/env";
+import { createPendingDeletion } from "../services/deletionLedger/createPendingDeletion";
+import { confirmDeletion } from "../services/deletionLedger/confirmDeletion";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -102,6 +105,29 @@ export const auth = betterAuth({
             `Failed to send account deletion email: ${error.message}`,
           );
         }
+      },
+    },
+  },
+
+  databaseHooks: {
+    user: {
+      delete: {
+        before: async (user) => {
+          await createPendingDeletion(user.id);
+        },
+
+        after: async (user) => {
+          const deletion = await confirmDeletion(user.id);
+
+          await inngest.send({
+            name: "user.deletion.externalize",
+            data: {
+              deletionId: deletion.deletionId,
+              userId: deletion.userId,
+              deletedAt: deletion.deletedAt,
+            },
+          });
+        },
       },
     },
   },

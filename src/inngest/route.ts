@@ -7,11 +7,13 @@ import { continueFanoutNotifications } from "../jobs/functions/fanoutNotificatio
 import { enqueueNotification } from "../jobs/functions/enqueueNotification";
 import { flushBatch } from "../jobs/functions/flushBatchNotification";
 import { cleanupDeviceTokens } from "../jobs/functions/cleanupDeviceTokens";
+import { externalizeUserDeletion } from "../jobs/functions/externalizeUserDeletion";
 
 export const inngestHandler = serve({
   client: inngest,
   functions: [
     fetchNews,
+    externalizeUserDeletion,
     flushSharesCron,
     fanoutNotifications,
     continueFanoutNotifications,
