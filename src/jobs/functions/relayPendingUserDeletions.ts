@@ -1,5 +1,5 @@
 import { InngestFunction } from "inngest";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt } from "drizzle-orm";
 
 import { inngest } from "../../lib/inngest";
 import { db } from "../../db";
@@ -42,16 +42,51 @@ export const relayPendingUserDeletions: InngestFunction.Any =
       let batchNumber = 0;
 
       /**
-       * Continue processing batches until there are no more
-       * confirmed deletions waiting in the outbox.
+       * The cursor is the deletionId of the last row dispatched
+       * during this relay execution.
        *
-       * This prevents a maximum throughput of only
-       * 100 deletions per cron execution.
+       * deletionId is unique, so it provides a stable keyset
+       * pagination cursor without relying on timestamp precision.
+       *
+       * It starts at null because the first query should begin
+       * from the first pending deletion.
+       */
+      let cursor: string | null = null;
+
+      /**
+       * Continue processing batches until there are no more
+       * confirmed deletions after the current cursor.
+       *
+       * Keyset pagination is important here because the dispatched
+       * outbox rows remain "pending" until the separate
+       * externalizeUserDeletion function successfully completes.
+       *
+       * Therefore, we must not rely on the outbox status changing
+       * between batches.
        */
       while (true) {
+        const currentCursor = cursor;
+
         const pendingDeletions: PendingDeletion[] = await step.run(
           `find-pending-user-deletions-${batchNumber}`,
           async (): Promise<PendingDeletion[]> => {
+            const conditions = [
+              eq(deletionOutbox.status, "pending"),
+              eq(deletionLedger.status, "confirmed"),
+            ];
+
+            /**
+             * After the first batch, only select rows whose
+             * deletionId is greater than the last dispatched
+             * deletionId.
+             *
+             * This allows the relay to move forward even when
+             * previously dispatched rows are still pending.
+             */
+            if (currentCursor !== null) {
+              conditions.push(gt(deletionLedger.deletionId, currentCursor));
+            }
+
             return db
               .select({
                 deletionId: deletionLedger.deletionId,
@@ -63,21 +98,17 @@ export const relayPendingUserDeletions: InngestFunction.Any =
                 deletionLedger,
                 eq(deletionOutbox.deletionId, deletionLedger.deletionId),
               )
-              .where(
-                and(
-                  eq(deletionOutbox.status, "pending"),
-                  eq(deletionLedger.status, "confirmed"),
-                ),
-              )
-              .orderBy(asc(deletionLedger.confirmedAt))
+              .where(and(...conditions))
+              .orderBy(asc(deletionLedger.deletionId))
               .limit(DELETION_RELAY_BATCH_SIZE);
           },
         );
 
         /**
-         * No more pending deletions.
+         * No more pending deletions after the current cursor.
          *
-         * The relay has completely drained the outbox.
+         * The relay has reached the end of the current keyset
+         * pagination range.
          */
         if (pendingDeletions.length === 0) {
           break;
@@ -114,13 +145,9 @@ export const relayPendingUserDeletions: InngestFunction.Any =
          *
          * Every event has a deterministic ID based on deletionId.
          *
-         * This is important because the outbox row remains "pending"
-         * until externalizeUserDeletion successfully writes the
-         * deletion record to R2 and marks the outbox row as processed.
-         *
-         * If this relay function is retried, the same deletion can
-         * safely be dispatched again because the event ID remains
-         * deterministic.
+         * This prevents duplicate event processing within
+         * Inngest's event deduplication window if the relay is
+         * replayed or retried.
          */
         const dispatched = await step.run(
           `dispatch-pending-user-deletions-${batchNumber}`,
@@ -155,15 +182,28 @@ export const relayPendingUserDeletions: InngestFunction.Any =
         );
 
         totalDispatched += dispatched;
+
+        /**
+         * Advance the keyset cursor immediately after the batch
+         * has been successfully dispatched.
+         *
+         * We deliberately do NOT wait for the outbox rows to become
+         * "processed". The separate externalizeUserDeletion function
+         * is responsible for that.
+         *
+         * The next database query will therefore move past this
+         * batch even if these rows are still "pending".
+         */
+        cursor = validatedDeletions[validatedDeletions.length - 1].deletionId;
+
         batchNumber += 1;
 
         /**
          * If fewer than the maximum batch size were returned,
-         * there cannot be another row after this batch under the
-         * current query state.
+         * there cannot be another row after this batch within
+         * the current query result.
          *
-         * We can finish immediately instead of performing one
-         * unnecessary database query.
+         * We can finish without performing another database query.
          */
         if (pendingDeletions.length < DELETION_RELAY_BATCH_SIZE) {
           break;
