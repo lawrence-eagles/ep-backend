@@ -9,6 +9,7 @@ import { flushBatch } from "../jobs/functions/flushBatchNotification";
 import { cleanupDeviceTokens } from "../jobs/functions/cleanupDeviceTokens";
 import { externalizeUserDeletion } from "../jobs/functions/externalizeUserDeletion";
 import { relayPendingUserDeletions } from "../jobs/functions/relayPendingUserDeletions";
+import { invalidateDeletedUserCache } from "../jobs/functions/invalidateDeletedUserCache";
 
 export const inngestHandler = serve({
   client: inngest,
@@ -22,5 +23,6 @@ export const inngestHandler = serve({
     flushBatch,
     cleanupDeviceTokens,
     relayPendingUserDeletions,
+    invalidateDeletedUserCache,
   ],
 });
