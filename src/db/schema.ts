@@ -113,15 +113,15 @@ export const deletionLedger = pgTable("deletion_ledger", {
 
   userId: text("user_id").notNull().unique(),
 
-  status: text("status").notNull().default("pending"),
-
+  /**
+   * Time recorded by the PostgreSQL DELETE trigger.
+   *
+   * This record is created in the same transaction as the
+   * user deletion.
+   */
   deletedAt: timestamp("deleted_at", {
     withTimezone: true,
-  }),
-
-  confirmedAt: timestamp("confirmed_at", {
-    withTimezone: true,
-  }),
+  }).notNull(),
 
   createdAt: timestamp("created_at", {
     withTimezone: true,
