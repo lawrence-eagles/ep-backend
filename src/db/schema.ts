@@ -106,6 +106,55 @@ export const uuidV7PrimaryKey = () =>
     .notNull()
     .default(sql`uuidv7()`);
 
+// Deletion ledger / tombstone table
+// This records: "User X has been confirmed as permanently deleted."
+export const deletionLedger = pgTable("deletion_ledger", {
+  deletionId: uuid("deletion_id").defaultRandom().primaryKey(),
+
+  userId: text("user_id").notNull().unique(),
+
+  /**
+   * Time recorded by the PostgreSQL DELETE trigger.
+   *
+   * This record is created in the same transaction as the
+   * user deletion.
+   */
+  deletedAt: timestamp("deleted_at", {
+    withTimezone: true,
+  }).notNull(),
+
+  createdAt: timestamp("created_at", {
+    withTimezone: true,
+  })
+    .notNull()
+    .defaultNow(),
+});
+
+// This records: "The deletion event still needs to be exported to the independent external deletion store."
+export const deletionOutbox = pgTable("deletion_outbox", {
+  id: uuid("id").defaultRandom().primaryKey(),
+
+  deletionId: uuid("deletion_id").notNull().unique(),
+
+  userId: text("user_id").notNull(),
+
+  status: text("status").notNull().default("pending"),
+
+  attempts: integer("attempts").notNull().default(0),
+
+  createdAt: timestamp("created_at", {
+    withTimezone: true,
+  })
+    .notNull()
+    .defaultNow(),
+
+  processedAt: timestamp("processed_at", {
+    withTimezone: true,
+  }),
+
+  lastError: text("last_error"),
+});
+
 // Posts Table
 // db/schema/posts.ts
 // posts table with indexes

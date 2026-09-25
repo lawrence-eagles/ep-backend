@@ -8,6 +8,20 @@
       "when": 1788702980394,
       "tag": "0000_init_production",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790249783262,
+      "tag": "0001_deletion-ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790342978778,
+      "tag": "0002_deletion-ledger-trigger-version",
+      "breakpoints": true
     }
   ]
 }

@@ -418,6 +418,11 @@ and
 ALTER TABLE "comment_likes" ADD CONSTRAINT "fk_comment_likes_comment_post" FOREIGN KEY ("comment_id","post_id") REFERENCES "public"."comments"("id","post_id") ON DELETE cascade ON UPDATE no action;
 ```
 
+```sql
+-- this must be above in the migration file where the deletion ledger table is created. so it could be the very first migration file if i decide to start all over.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+```
+
 2. For the first migration add the DB trigger is then saved in the DB so no need to add the trigger in other migration.
 
 ## Firebase
@@ -446,7 +451,7 @@ https://console.firebase.google.com?utm_source=chatgpt.com
  -->
 
 <!--
-old flush cron timeouts:
+old flush cron timeouts for reference:
 timeouts: {
       start: "55s",
     },

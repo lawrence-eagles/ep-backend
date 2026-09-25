@@ -9,6 +9,8 @@ import DeleteAccountEmail from "../emails/DeleteAccountEmail";
 import { db } from "../db"; // your drizzle instance
 import { schema } from "../db"; // the schema exported as const.
 import { getEnv } from "../lib/env";
+import { getDeletionByUserId } from "../services/deletionLedger/deletion/getDeletionByUserId";
+import { inngest } from "./inngest";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -100,6 +102,56 @@ export const auth = betterAuth({
         if (error) {
           throw new Error(
             `Failed to send account deletion email: ${error.message}`,
+          );
+        }
+      },
+
+      afterDelete: async (user) => {
+        try {
+          /**
+           * The PostgreSQL deletion trigger has already created:
+           *
+           *   deletion_ledger
+           *   deletion_outbox
+           *
+           * inside the same transaction as the user deletion.
+           *
+           * Therefore this event is only an immediate delivery
+           * optimization. It is NOT responsible for durability.
+           */
+          const deletion = await getDeletionByUserId(user.id);
+
+          if (!deletion) {
+            throw new Error(
+              `Deletion ledger record was not found after successful ` +
+                `user deletion. UserId=${user.id}`,
+            );
+          }
+
+          await inngest.send({
+            name: "user.deletion.externalize",
+            id: `user-deletion-externalize-${deletion.deletionId}`,
+            data: {
+              deletionId: deletion.deletionId,
+              userId: deletion.userId,
+              deletedAt: deletion.deletedAt,
+            },
+          });
+        } catch (error) {
+          /**
+           * IMPORTANT:
+           *
+           * Do not allow an Inngest outage to turn into a problem
+           * with the already-completed account deletion.
+           *
+           * The deletion outbox remains pending and the scheduled
+           * relay will pick it up.
+           */
+          console.error(
+            `Failed to immediately enqueue user deletion ` +
+              `externalization. The scheduled relay will retry. ` +
+              `UserId=${user.id}`,
+            error,
           );
         }
       },
