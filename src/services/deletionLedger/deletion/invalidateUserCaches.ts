@@ -41,7 +41,8 @@ export async function invalidateUserCaches(userId: string): Promise<{
     throw new Error("Cannot invalidate user caches: userId is required.");
   }
 
-  // Keep this implementation exactly as is, it is delebrate and it is critcal for the functionality.
+  // Keep this implementation exactly as is. It is deliberate and critical
+  // for the functionality.
   const redis = await getRedis();
 
   const safeUserId = escapeRedisGlob(userId);
@@ -85,21 +86,33 @@ export async function invalidateUserCaches(userId: string): Promise<{
     const keysToDelete: string[] = [];
 
     try {
-      for await (const key of redis.scanIterator({
+      for await (const keyBatch of redis.scanIterator({
         MATCH: pattern,
         COUNT: REDIS_SCAN_COUNT,
       })) {
-        scannedKeys += 1;
-        keysToDelete.push(key);
+        const keys: string[] = Array.isArray(keyBatch)
+          ? keyBatch.map((key): string => String(key))
+          : [String(keyBatch)];
 
-        if (keysToDelete.length >= REDIS_DELETE_BATCH_SIZE) {
-          deletedKeys += await redis.unlink(keysToDelete);
-          keysToDelete.length = 0;
+        for (const key of keys) {
+          scannedKeys += 1;
+          keysToDelete.push(key);
+
+          if (keysToDelete.length >= REDIS_DELETE_BATCH_SIZE) {
+            const result = await redis.sendCommand(["UNLINK", ...keysToDelete]);
+
+            deletedKeys += Number(result);
+
+            keysToDelete.length = 0;
+          }
         }
       }
 
       if (keysToDelete.length > 0) {
-        deletedKeys += await redis.unlink(keysToDelete);
+        const result = await redis.sendCommand(["UNLINK", ...keysToDelete]);
+
+        deletedKeys += Number(result);
+
         keysToDelete.length = 0;
       }
     } catch (error) {
