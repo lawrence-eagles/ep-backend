@@ -99,9 +99,9 @@ export async function invalidateUserCaches(userId: string): Promise<{
           keysToDelete.push(key);
 
           if (keysToDelete.length >= REDIS_DELETE_BATCH_SIZE) {
-            for (const keyToDelete of keysToDelete) {
-              deletedKeys += await redis.unlink(keyToDelete);
-            }
+            const result = await redis.sendCommand(["UNLINK", ...keysToDelete]);
+
+            deletedKeys += Number(result);
 
             keysToDelete.length = 0;
           }
@@ -109,9 +109,9 @@ export async function invalidateUserCaches(userId: string): Promise<{
       }
 
       if (keysToDelete.length > 0) {
-        for (const keyToDelete of keysToDelete) {
-          deletedKeys += await redis.unlink(keyToDelete);
-        }
+        const result = await redis.sendCommand(["UNLINK", ...keysToDelete]);
+
+        deletedKeys += Number(result);
 
         keysToDelete.length = 0;
       }
