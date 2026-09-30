@@ -152,10 +152,28 @@ export async function scrapeArticle(url: string): Promise<ScrapeResult> {
 
     const cleanContent = content.slice(0, 5000) || null;
 
-    const imageUrl =
+    // Extract OG image
+    const rawImageUrl =
       $('meta[property="og:image"]').attr("content") ??
       $('meta[name="twitter:image"]').attr("content") ??
       null;
+
+    let imageUrl: string | null = null;
+
+    if (rawImageUrl) {
+      try {
+        const resolvedUrl = new URL(rawImageUrl, url);
+
+        if (
+          resolvedUrl.protocol === "http:" ||
+          resolvedUrl.protocol === "https:"
+        ) {
+          imageUrl = resolvedUrl.href;
+        }
+      } catch {
+        console.warn("[scraper] Invalid image URL:", rawImageUrl);
+      }
+    }
 
     const result: ScrapeResult = {
       content: cleanContent,
