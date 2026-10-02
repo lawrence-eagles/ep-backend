@@ -1,5 +1,6 @@
 import { and, eq, or, isNull, lt, sql } from "drizzle-orm";
 import type { InngestFunction } from "inngest";
+
 import { inngest } from "../../lib/inngest";
 import { db } from "../../db";
 import { imagekitCleanup } from "../../db/schema";
@@ -8,7 +9,7 @@ import { deleteImageKitFile } from "../../lib/imageKit";
 // A cleanup worker owns a job for 10 minutes.
 const CLEANUP_LOCK_MINUTES = 10;
 
-export const cleanupImageKitFile: InngestFunction.Any = inngest.createFunction(
+const cleanupImageKitFileFunction = inngest.createFunction(
   {
     id: "cleanup-imagekit-file",
 
@@ -16,6 +17,58 @@ export const cleanupImageKitFile: InngestFunction.Any = inngest.createFunction(
 
     triggers: {
       event: "imagekit/cleanup.requested",
+    },
+
+    // Runs only after the main function has exhausted
+    // all configured retries.
+    onFailure: async ({ event, error, step }) => {
+      await step.run("mark-cleanup-failed", async () => {
+        /*
+         * onFailure receives the Inngest failure event.
+         *
+         * The original event is available at:
+         *
+         * event.data.event
+         *
+         * Its data contains the cleanupId that
+         * originally triggered this function.
+         */
+        const originalEvent = event.data.event as {
+          data?: {
+            cleanupId?: unknown;
+          };
+        };
+
+        const cleanupId = originalEvent.data?.cleanupId;
+
+        if (typeof cleanupId !== "string" || cleanupId.length === 0) {
+          console.error(
+            "ImageKit cleanup failure could not be recorded: invalid cleanupId",
+            {
+              error,
+            },
+          );
+
+          return;
+        }
+
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+
+        await db
+          .update(imagekitCleanup)
+          .set({
+            status: "failed",
+            lockedUntil: null,
+            lastError: errorMessage,
+          })
+          .where(
+            and(
+              eq(imagekitCleanup.id, cleanupId),
+              eq(imagekitCleanup.status, "processing"),
+            ),
+          );
+      });
     },
   },
 
@@ -71,7 +124,7 @@ export const cleanupImageKitFile: InngestFunction.Any = inngest.createFunction(
     });
 
     // Another worker already owns this job,
-    // or it was already completed.
+    // or it was already completed/failed.
     if (!claimed) {
       return {
         skipped: true,
@@ -110,3 +163,6 @@ export const cleanupImageKitFile: InngestFunction.Any = inngest.createFunction(
     };
   },
 );
+
+export const cleanupImageKitFile: InngestFunction.Any =
+  cleanupImageKitFileFunction;

@@ -20,6 +20,7 @@ import afterAuthCallback from "./routes/auth-callback";
 import registerDeviceTokenRoute from "./routes/deviceTokenRoutes";
 import singlePostRoutes from "./routes/singlePostRoutes";
 import imageKitRoutes from "./routes/imageKitRoutes";
+import userAvatarRouter from "./routes/userAvatarRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -60,6 +61,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/auth", imageKitRoutes); // ImageKit auth route;
+app.use("/api/user", userAvatarRouter); // ImageKite avatar update route.
 app.use("/app", appShareRoutes);
 app.use("/api/v1/push", registerDeviceTokenRoute);
 app.use("/api/v1/after-auth", afterAuthCallback); // call this route after better auth login or registration succeeds. Also must pass cookie
