@@ -6,6 +6,7 @@ CREATE TABLE "imagekit_cleanup" (
 	"status" "imagekit_cleanup_status" DEFAULT 'pending' NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"last_error" text,
+	"claim_run_id" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"processed_at" timestamp with time zone,
 	"next_attempt_at" timestamp with time zone,

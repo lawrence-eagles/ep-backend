@@ -178,6 +178,8 @@ export const imagekitCleanup = pgTable(
 
     lastError: text("last_error"),
 
+    claimRunId: text("claim_run_id"),
+
     createdAt: timestamp("created_at", {
       withTimezone: true,
     })

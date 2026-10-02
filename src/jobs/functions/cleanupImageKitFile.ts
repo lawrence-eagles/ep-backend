@@ -9,6 +9,17 @@ import { deleteImageKitFile } from "../../lib/imageKit";
 // A cleanup worker owns a job for 10 minutes.
 const CLEANUP_LOCK_MINUTES = 10;
 
+type OriginalCleanupEvent = {
+  data?: {
+    cleanupId?: unknown;
+  };
+};
+
+type FailureEventData = {
+  event?: OriginalCleanupEvent;
+  run_id?: unknown;
+};
+
 const cleanupImageKitFileFunction = inngest.createFunction(
   {
     id: "cleanup-imagekit-file",
@@ -24,27 +35,38 @@ const cleanupImageKitFileFunction = inngest.createFunction(
     onFailure: async ({ event, error, step }) => {
       await step.run("mark-cleanup-failed", async () => {
         /*
-         * onFailure receives the Inngest failure event.
+         * onFailure receives the "inngest/function.failed"
+         * system event.
          *
-         * The original event is available at:
+         * event.data.event contains the original event
+         * that triggered the failed function.
          *
-         * event.data.event
+         * event.data.run_id contains the run ID of the
+         * ORIGINAL failed function.
          *
-         * Its data contains the cleanupId that
-         * originally triggered this function.
+         * The runId passed directly to onFailure would be
+         * the run ID of this separate failure-handler run,
+         * so it must NOT be used for ownership.
          */
-        const originalEvent = event.data.event as {
-          data?: {
-            cleanupId?: unknown;
-          };
-        };
+        const failureData = event.data as FailureEventData;
 
-        const cleanupId = originalEvent.data?.cleanupId;
+        const originalEvent = failureData.event;
 
-        if (typeof cleanupId !== "string" || cleanupId.length === 0) {
+        const cleanupId = originalEvent?.data?.cleanupId;
+
+        const failedRunId = failureData.run_id;
+
+        if (
+          typeof cleanupId !== "string" ||
+          cleanupId.length === 0 ||
+          typeof failedRunId !== "string" ||
+          failedRunId.length === 0
+        ) {
           console.error(
-            "ImageKit cleanup failure could not be recorded: invalid cleanupId",
+            "ImageKit cleanup failure could not be recorded: invalid cleanupId or failed run ID",
             {
+              cleanupId,
+              failedRunId,
               error,
             },
           );
@@ -55,6 +77,18 @@ const cleanupImageKitFileFunction = inngest.createFunction(
         const errorMessage =
           error instanceof Error ? error.message : String(error);
 
+        /*
+         * IMPORTANT:
+         *
+         * Only mark the job as failed if THIS failed
+         * Inngest run still owns the cleanup job.
+         *
+         * If the 10-minute lease expired and another
+         * Inngest run claimed the job, claimRunId will
+         * contain the newer run's ID. Therefore this
+         * UPDATE will affect zero rows and will NOT
+         * overwrite the newer run's processing state.
+         */
         await db
           .update(imagekitCleanup)
           .set({
@@ -66,13 +100,14 @@ const cleanupImageKitFileFunction = inngest.createFunction(
             and(
               eq(imagekitCleanup.id, cleanupId),
               eq(imagekitCleanup.status, "processing"),
+              eq(imagekitCleanup.claimRunId, failedRunId),
             ),
           );
       });
     },
   },
 
-  async ({ event, step }) => {
+  async ({ event, step, runId }) => {
     const cleanupId = event.data.cleanupId;
 
     // ─────────────────────────────────────────
@@ -91,8 +126,21 @@ const cleanupImageKitFileFunction = inngest.createFunction(
         .update(imagekitCleanup)
         .set({
           status: "processing",
+
           attempts: sql`${imagekitCleanup.attempts} + 1`,
+
           lockedUntil,
+
+          /*
+           * Record the exact Inngest run that owns
+           * this cleanup job.
+           *
+           * onFailure later uses event.data.run_id
+           * to make sure only this run can mark
+           * the job as failed.
+           */
+          claimRunId: runId,
+
           lastError: null,
         })
         .where(
@@ -123,8 +171,10 @@ const cleanupImageKitFileFunction = inngest.createFunction(
       return job ?? null;
     });
 
-    // Another worker already owns this job,
-    // or it was already completed/failed.
+    /*
+     * Another worker already owns this job,
+     * or it was already completed/failed.
+     */
     if (!claimed) {
       return {
         skipped: true,

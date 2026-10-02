@@ -1,5 +1,5 @@
 {
-  "id": "a4277723-11fb-4a8d-a411-d292924d35cf",
+  "id": "508e66f4-5d1f-44de-a10e-25947b0c9e99",
   "prevId": "63132df0-0965-40a1-8685-50c5d945893a",
   "version": "7",
   "dialect": "postgresql",
@@ -1058,6 +1058,12 @@
         },
         "last_error": {
           "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_run_id": {
+          "name": "claim_run_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
