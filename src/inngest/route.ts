@@ -10,6 +10,8 @@ import { cleanupDeviceTokens } from "../jobs/functions/cleanupDeviceTokens";
 import { externalizeUserDeletion } from "../jobs/functions/externalizeUserDeletion";
 import { relayPendingUserDeletions } from "../jobs/functions/relayPendingUserDeletions";
 import { invalidateDeletedUserCache } from "../jobs/functions/invalidateDeletedUserCache";
+import { cleanupImageKitFile } from "../jobs/functions/cleanupImageKitFile";
+import { scanImageKitCleanup } from "../jobs/functions/scanImageKitCleanup";
 
 export const inngestHandler = serve({
   client: inngest,
@@ -24,5 +26,7 @@ export const inngestHandler = serve({
     cleanupDeviceTokens,
     relayPendingUserDeletions,
     invalidateDeletedUserCache,
+    cleanupImageKitFile,
+    scanImageKitCleanup,
   ],
 });

@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
+import { imagekit, deleteImageKitFile } from "./imageKit";
 import { expo } from "@better-auth/expo";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { Resend } from "resend";
@@ -11,6 +13,26 @@ import { schema } from "../db"; // the schema exported as const.
 import { getEnv } from "../lib/env";
 import { getDeletionByUserId } from "../services/deletionLedger/deletion/getDeletionByUserId";
 import { inngest } from "./inngest";
+
+// ─────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────
+
+type UserImageUpdateData = {
+  imageFileId?: string | null;
+};
+
+type UserWithImageFileId = {
+  id: string;
+  imageFileId?: string | null;
+};
+
+// Keeps the old ImageKit file ID only for the
+// lifetime of the Better Auth hook context.
+//
+// WeakMap prevents this from retaining contexts
+// after they are no longer referenced elsewhere.
+const pendingAvatarCleanup = new WeakMap<object, string | null>();
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -84,6 +106,9 @@ export const auth = betterAuth({
     schema,
   }),
   user: {
+    additionalFields: {
+      imageFileId: { type: "string", required: false }, // input allowed
+    },
     deleteUser: {
       enabled: true,
 
@@ -105,7 +130,6 @@ export const auth = betterAuth({
           );
         }
       },
-
       afterDelete: async (user) => {
         try {
           /**
@@ -154,6 +178,120 @@ export const auth = betterAuth({
             error,
           );
         }
+      },
+    },
+  },
+
+  databaseHooks: {
+    user: {
+      update: {
+        // ─────────────────────────────────────────
+        // BEFORE
+        // ─────────────────────────────────────────
+        before: async (data, ctx) => {
+          // Better Auth 1.6.23 types ctx as nullable.
+          if (!ctx) {
+            throw new APIError("UNAUTHORIZED", {
+              message: "Authentication context is unavailable",
+            });
+          }
+
+          const updateData = data as UserImageUpdateData;
+
+          const newImageFileId = updateData.imageFileId;
+
+          // imageFileId was not changed.
+          if (newImageFileId === undefined) {
+            return { data };
+          }
+
+          const session = ctx.context.session;
+
+          if (!session) {
+            throw new APIError("UNAUTHORIZED");
+          }
+
+          const currentUser = session.user as UserWithImageFileId;
+
+          const oldImageFileId = currentUser.imageFileId ?? null;
+
+          // ─────────────────────────────────────────
+          // REMOVE AVATAR
+          // ─────────────────────────────────────────
+
+          if (newImageFileId === null) {
+            pendingAvatarCleanup.set(ctx, oldImageFileId);
+
+            return { data };
+          }
+
+          // ─────────────────────────────────────────
+          // REPLACE AVATAR
+          // ─────────────────────────────────────────
+
+          const file = await imagekit.files
+            .get(newImageFileId)
+            .catch(() => null);
+
+          if (
+            !file ||
+            !file.filePath?.startsWith(
+              `/eaglespress/profile-images/${session.user.id}/`,
+            )
+          ) {
+            throw new APIError("BAD_REQUEST", {
+              message: "Invalid image file",
+            });
+          }
+
+          // Don't delete anything if the new file is
+          // already the user's current avatar.
+          const oldFileToDelete =
+            oldImageFileId !== null && oldImageFileId !== newImageFileId
+              ? oldImageFileId
+              : null;
+
+          pendingAvatarCleanup.set(ctx, oldFileToDelete);
+
+          return { data };
+        },
+
+        // ─────────────────────────────────────────
+        // AFTER
+        // ─────────────────────────────────────────
+        after: async (user, ctx) => {
+          // Better Auth 1.6.23 allows ctx to be null.
+          if (!ctx) {
+            console.error(
+              "Avatar cleanup skipped: authentication context unavailable",
+              {
+                userId: user.id,
+              },
+            );
+
+            return;
+          }
+
+          const oldImageFileId = pendingAvatarCleanup.get(ctx) ?? null;
+
+          // Explicitly release our reference.
+          pendingAvatarCleanup.delete(ctx);
+
+          // Nothing to clean up.
+          if (!oldImageFileId) {
+            return;
+          }
+
+          try {
+            await deleteImageKitFile(oldImageFileId);
+          } catch (error) {
+            console.error("Old avatar cleanup failed", {
+              userId: user.id,
+              imageFileId: oldImageFileId,
+              error,
+            });
+          }
+        },
       },
     },
   },
