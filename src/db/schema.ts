@@ -36,6 +36,7 @@ export const user = pgTable("user", {
     .defaultNow()
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
+  imageFileId: text("image_file_id"),
 });
 
 export const session = pgTable(
@@ -96,7 +97,6 @@ export const verification = pgTable(
   },
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
-
 // BETTER AUTH GENERATED TABLES END.
 
 // UUID version 7 helper function
@@ -154,6 +154,62 @@ export const deletionOutbox = pgTable("deletion_outbox", {
 
   lastError: text("last_error"),
 });
+
+// ImageKit cleanup deletion table
+export const imagekitCleanupStatusEnum = pgEnum("imagekit_cleanup_status", [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+]);
+
+export const imagekitCleanup = pgTable(
+  "imagekit_cleanup",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    fileId: text("file_id").notNull(),
+
+    userId: text("user_id"),
+
+    status: imagekitCleanupStatusEnum("status").notNull().default("pending"),
+
+    attempts: integer("attempts").notNull().default(0),
+
+    lastError: text("last_error"),
+
+    claimRunId: text("claim_run_id"),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    processedAt: timestamp("processed_at", {
+      withTimezone: true,
+    }),
+
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+    }),
+
+    // Prevents a claimed job from becoming
+    // permanently stuck in "processing".
+    lockedUntil: timestamp("locked_until", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    uniqueIndex("imagekit_cleanup_file_id_unique").on(table.fileId),
+
+    index("imagekit_cleanup_status_idx").on(table.status),
+
+    index("imagekit_cleanup_next_attempt_idx").on(table.nextAttemptAt),
+
+    index("imagekit_cleanup_locked_until_idx").on(table.lockedUntil),
+  ],
+);
 
 // Posts Table
 // db/schema/posts.ts

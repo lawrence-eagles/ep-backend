@@ -84,6 +84,13 @@ export const auth = betterAuth({
     schema,
   }),
   user: {
+    additionalFields: {
+      imageFileId: {
+        type: "string",
+        required: false,
+        input: false,
+      },
+    },
     deleteUser: {
       enabled: true,
 
@@ -105,7 +112,6 @@ export const auth = betterAuth({
           );
         }
       },
-
       afterDelete: async (user) => {
         try {
           /**

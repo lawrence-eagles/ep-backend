@@ -1,0 +1,1 @@
+ALTER TABLE "user" ADD COLUMN "image_file_id" text;
