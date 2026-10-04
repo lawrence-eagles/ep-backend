@@ -13,12 +13,12 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_MODEL = "gpt-5.6-luna";
 
 /**
- * fetchNews.ts currently sends 5 articles per AI batch.
+ * fetchNews.ts currently sends 3 articles per AI batch.
  *
  * This is also enforced here defensively so that another caller cannot
  * accidentally create an oversized OpenAI request.
  */
-const MAX_ARTICLES_PER_REQUEST = 5;
+const MAX_ARTICLES_PER_REQUEST = 3;
 
 /**
  * Maximum article content sent to OpenAI per article.
@@ -42,14 +42,13 @@ const OUTPUT_TOKENS_PER_ARTICLE = 160;
 /**
  * Minimum output budget for any request.
  *
- * For a normal 5-article fetchNews.ts batch:
+ * A normal 3-article fetchNews.ts batch requires:
  *
- *   5 × 160 = 800
+ *   3 × 160 = 480
  *
- * Therefore a 5-article request receives 800 output tokens.
- *
- * This is intentionally above the previous 512-token budget, which could
- * deterministically truncate a 5-article response.
+ * The 800-token minimum intentionally provides additional room
+ * for the Structured Outputs JSON envelope and prevents
+ * deterministic truncation.
  */
 const MIN_OUTPUT_TOKENS = 800;
 
@@ -921,8 +920,8 @@ export async function batchSummarize(
   /**
    * Defensive internal batching.
    *
-   * fetchNews.ts already sends 5 articles per batch, but this protects this
-   * function if another caller passes more than 5.
+   * fetchNews.ts already sends 3 articles per batch, but this protects this
+   * function if another caller passes more than 3.
    */
   const requestBatches: string[][] = [];
 
@@ -944,7 +943,7 @@ export async function batchSummarize(
      *
      * fetchNews.ts already controls concurrency with:
      *
-     *   AI_BATCH_CONCURRENCY = 3
+     *   AI_BATCH_CONCURRENCY = 1
      *
      * Adding another concurrency layer here would multiply the number of
      * simultaneous OpenAI requests.
