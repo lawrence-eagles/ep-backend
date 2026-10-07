@@ -26,15 +26,8 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1790884561344,
-      "tag": "0003_imageKit_imageField",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1791232894941,
-      "tag": "0004_imagekit_cleanup_deletion_trigger",
+      "when": 1791369136395,
+      "tag": "0003_imageKit_deletion_cleanup_and_trigger",
       "breakpoints": true
     }
   ]

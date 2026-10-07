@@ -13,6 +13,7 @@ CREATE TABLE "imagekit_cleanup" (
 	"locked_until" timestamp with time zone
 );
 --> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN "image_file_id" text;--> statement-breakpoint
 CREATE UNIQUE INDEX "imagekit_cleanup_file_id_unique" ON "imagekit_cleanup" USING btree ("file_id");--> statement-breakpoint
 CREATE INDEX "imagekit_cleanup_status_idx" ON "imagekit_cleanup" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "imagekit_cleanup_next_attempt_idx" ON "imagekit_cleanup" USING btree ("next_attempt_at");--> statement-breakpoint
