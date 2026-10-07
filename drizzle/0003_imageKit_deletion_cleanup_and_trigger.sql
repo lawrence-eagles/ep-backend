@@ -47,6 +47,8 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS user_imagekit_cleanup_trigger ON "user";
+
 CREATE TRIGGER user_imagekit_cleanup_trigger
 BEFORE DELETE ON "user"
 FOR EACH ROW
