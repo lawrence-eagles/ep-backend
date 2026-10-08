@@ -18,6 +18,7 @@ CREATE UNIQUE INDEX "imagekit_cleanup_file_id_unique" ON "imagekit_cleanup" USIN
 CREATE INDEX "imagekit_cleanup_status_idx" ON "imagekit_cleanup" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "imagekit_cleanup_next_attempt_idx" ON "imagekit_cleanup" USING btree ("next_attempt_at");--> statement-breakpoint
 CREATE INDEX "imagekit_cleanup_locked_until_idx" ON "imagekit_cleanup" USING btree ("locked_until");
+--> statement-breakpoint
 
 -- ======================================
 -- My additional cleanup trigger to delete old records from the imagekit_cleanup table
@@ -47,7 +48,10 @@ BEGIN
 END;
 $$;
 
+--> statement-breakpoint
+
 DROP TRIGGER IF EXISTS user_imagekit_cleanup_trigger ON "user";
+--> statement-breakpoint
 
 CREATE TRIGGER user_imagekit_cleanup_trigger
 BEFORE DELETE ON "user"
