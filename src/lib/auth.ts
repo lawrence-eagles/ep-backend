@@ -11,6 +11,7 @@ import { schema } from "../db"; // the schema exported as const.
 import { getEnv } from "../lib/env";
 import { getDeletionByUserId } from "../services/deletionLedger/deletion/getDeletionByUserId";
 import { inngest } from "./inngest";
+import { redisSecondaryStorage } from "./redis-secondary-storage";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -32,6 +33,26 @@ export const auth = betterAuth({
         ]
       : []),
   ],
+
+  secondaryStorage: redisSecondaryStorage,
+
+  session: {
+    storeSessionInDatabase: true,
+    expiresIn: 60 * 60 * 24 * 7,
+    updateAge: 60 * 60 * 24,
+  },
+
+  rateLimit: {
+    enabled: true,
+    storage: "secondary-storage",
+  },
+
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders: ["cf-connecting-ip"],
+    },
+  },
+
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
       await resend.emails.send({
