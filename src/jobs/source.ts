@@ -59,6 +59,7 @@ export function normalizeFeedUrl(raw: string): string {
 // ─────────────────────────────────────────────
 
 export const FEEDS = [
+  { name: "Axios", url: "https://www.axios.com/feeds/feed.rss" },
   { name: "CNN", url: "http://rss.cnn.com/rss/edition.rss" },
   { name: "BBC", url: "https://feeds.bbci.co.uk/news/world/rss.xml" },
   { name: "Al Jazeera", url: "https://www.aljazeera.com/xml/rss/all.xml" },

@@ -23,6 +23,10 @@
 21. Add privacy policy
 22. Add searching feature --- use https://typesense.org/ version 2
 23. Add explore routes to all users to filter by category ✅
+24. Gamification -- XP, leaderboard, streaks
+25. A built in community for users to discuss news --- brain storm on this.
+26. Youtube videos in feeds
+27. Reading time and viewing time calucation into user behaviour.
 
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -455,4 +459,8 @@ old flush cron timeouts for reference:
 timeouts: {
       start: "55s",
     },
+
+    "@better-auth/expo": "^1.6.23",
+    "better-auth": "^1.6.20",
+    "redis": "^6.0.0",
  -->
