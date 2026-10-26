@@ -100,15 +100,18 @@ export const shareVersionOne = async (req: Request, res: Response) => {
     // =========================
     // 3. CACHE (BEST-EFFORT)
     // =========================
+
     if (didShare) {
       const redis = await getRedisSafe();
 
       if (redis) {
         try {
+          const ttl = 60 * 60 * 24 * 30; // 30 days
           const pipeline = redis.multi();
 
           // Only invalidate personalized feed
           pipeline.incr(`feed:${userId}:version`);
+          pipeline.expire(`feed:${userId}:version`, ttl);
 
           await pipeline.exec();
         } catch (err) {

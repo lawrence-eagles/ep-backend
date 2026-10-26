@@ -64,6 +64,10 @@ export const FEEDS = [
   { name: "BBC", url: "https://feeds.bbci.co.uk/news/world/rss.xml" },
   { name: "Al Jazeera", url: "https://www.aljazeera.com/xml/rss/all.xml" },
   {
+    name: "The Economist",
+    url: "https://www.economist.com/international/rss.xml",
+  },
+  {
     name: "NYTimes",
     url: "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
   },
