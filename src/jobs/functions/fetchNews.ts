@@ -966,7 +966,6 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
     },
 
     triggers: {
-      // cron: "0 */6 * * *",
       cron: "0 5 * * *",
     },
 

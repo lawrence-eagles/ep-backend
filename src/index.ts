@@ -3,9 +3,13 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { toNodeHandler } from "better-auth/node";
+
+import { pool } from "./db";
 import { inngestHandler } from "./inngest/route";
 import { getEnv } from "./lib/env";
 import { auth } from "./lib/auth";
+import { closeRedis } from "./lib/redis";
+
 import bookmarksRoutes from "./routes/bookmarksRoutes";
 import categoriesRoutes from "./routes/categoriesRoutes";
 import followsRoutes from "./routes/followsRoutes";
@@ -24,47 +28,72 @@ import userAvatarRouter from "./routes/userAvatarRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
+
 const app = express();
+
+// ─────────────────────────────────────────────
+// CORS
+// ─────────────────────────────────────────────
 
 app.use(
   cors({
-    origin: frontendOrigin, // Replace with your frontend's origin
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Specify allowed HTTP methods
-    credentials: true, // Allow credentials (cookies, authorization headers, etc.)
+    origin: frontendOrigin,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    credentials: true,
   }),
 );
 
-// Enable trust proxy
+// ─────────────────────────────────────────────
+// PROXY AND COOKIES
+// ─────────────────────────────────────────────
+
 app.set("trust proxy", true);
+
 app.use(cookieParser());
 
-// Note must send cookies from frontend as seen below
-// await fetch("https://api.yoursite.com", {
-//   credentials: "include",
-// });
+// ─────────────────────────────────────────────
+// BETTER AUTH
+// Must be registered before the global JSON parser.
+// ─────────────────────────────────────────────
 
-// REQUIRED for better auth integration must be before express.json().
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
-// Inngest endpoint.
-// Give Inngest its own JSON body limit because Inngest requests can
-// contain substantially more data than normal API requests.
+// ─────────────────────────────────────────────
+// INNGEST
+// Give Inngest its own JSON body limit.
+// This must remain before the global JSON parser.
+// ─────────────────────────────────────────────
+
 app.use("/api/inngest", express.json({ limit: "10mb" }));
-// 👇 REQUIRED endpoint for Inngest
+
 app.use("/api/inngest", inngestHandler);
 
-// Normal application JSON parser.
+// ─────────────────────────────────────────────
+// GLOBAL JSON PARSER
+// Used by the normal application routes.
+// ─────────────────────────────────────────────
+
 app.use(express.json());
+
+// ─────────────────────────────────────────────
+// HEALTH CHECK
+// ─────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.use("/auth", imageKitRoutes); // ImageKit auth route;
-app.use("/api/user", userAvatarRouter); // ImageKite avatar update route.
+// ─────────────────────────────────────────────
+// APPLICATION ROUTES
+// ─────────────────────────────────────────────
+
+app.use("/auth", imageKitRoutes);
+app.use("/api/user", userAvatarRouter);
 app.use("/app", appShareRoutes);
 app.use("/api/v1/push", registerDeviceTokenRoute);
-app.use("/api/v1/after-auth", afterAuthCallback); // call this route after better auth login or registration succeeds. Also must pass cookie
+
+app.use("/api/v1/after-auth", afterAuthCallback);
+
 app.use("/api/v1/posts", feedsRoutes);
 app.use("/api/v1/bookmarks", bookmarksRoutes);
 app.use("/api/v1/categories", categoriesRoutes);
@@ -74,8 +103,106 @@ app.use("/api/v1/comment-likes", commentLikesRoutes);
 app.use("/api/v1/shares", sharesRoutes);
 app.use("/api/v1/comments", commentsRoutes);
 app.use("/api/v1/single-post/:slug", singlePostRoutes);
-app.use("/s/:id", redirectRoutes); // handles redirect when user wants to share app
 
-app.listen(env.PORT, () =>
-  console.log("Eaglespress sever started and listening on port", env.PORT),
-);
+app.use("/s/:id", redirectRoutes);
+
+// ─────────────────────────────────────────────
+// HTTP SERVER
+// ─────────────────────────────────────────────
+
+const server = app.listen(env.PORT, "0.0.0.0", () => {
+  console.log("Eaglespress server started and listening on port", env.PORT);
+});
+
+// ─────────────────────────────────────────────
+// POSTGRESQL POOL MONITORING
+// ─────────────────────────────────────────────
+
+function logPoolMetrics() {
+  console.info("PostgreSQL pool metrics:", {
+    totalConnections: pool.totalCount,
+    idleConnections: pool.idleCount,
+    waitingRequests: pool.waitingCount,
+  });
+}
+
+// Log pool metrics every 60 seconds.
+const poolMetricsInterval = setInterval(() => {
+  logPoolMetrics();
+}, 60_000);
+
+// Allow Node.js to exit naturally without this interval keeping it alive.
+poolMetricsInterval.unref();
+
+// ─────────────────────────────────────────────
+// GRACEFUL SHUTDOWN
+// ─────────────────────────────────────────────
+
+let isShuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (isShuttingDown) return;
+
+  isShuttingDown = true;
+
+  console.log(`${signal} received. Shutting down gracefully...`);
+
+  clearInterval(poolMetricsInterval);
+
+  const forceCloseTimer = setTimeout(() => {
+    console.warn(
+      "Shutdown timeout reached. Closing remaining HTTP connections.",
+    );
+
+    server.closeAllConnections();
+  }, 15_000);
+
+  forceCloseTimer.unref();
+
+  try {
+    // 1. Stop accepting new requests and wait for active requests.
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    clearTimeout(forceCloseTimer);
+
+    // 2. Close Redis.
+    await closeRedis();
+
+    // 3. Close PostgreSQL.
+    await pool.end();
+
+    console.log("All connections closed successfully.");
+
+    process.exitCode = 0;
+  } catch (error) {
+    clearTimeout(forceCloseTimer);
+
+    console.error("Error during graceful shutdown:", error);
+
+    server.closeAllConnections();
+
+    // Best-effort cleanup.
+    await Promise.allSettled([closeRedis(), pool.end()]);
+
+    process.exitCode = 1;
+  }
+}
+
+// Railway normally sends SIGTERM during deployments and restarts.
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+// Useful for local development and manual termination.
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
+});

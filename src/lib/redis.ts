@@ -5,7 +5,7 @@ import { getEnv } from "../lib/env";
 const env = getEnv();
 
 // ─────────────────────────────────────────────────────────────
-// Singleton Redis Client (Production Safe)
+// Singleton Redis Client
 // ─────────────────────────────────────────────────────────────
 
 let redis: RedisClientType | null = null;
@@ -19,16 +19,14 @@ function createRedisClient(): RedisClientType {
       reconnectStrategy: (retries) => {
         if (retries > 10) {
           console.error("[redis] Max reconnect attempts reached — giving up");
+
           return new Error("Redis reconnect limit exceeded");
         }
 
-        // Exponential backoff (capped)
         return Math.min(2 ** retries * 100, 3000);
       },
     },
   });
-
-  // ── Event listeners ─────────────────────────────
 
   client.on("connect", () => {
     console.log("[redis] Connected");
@@ -54,7 +52,7 @@ function createRedisClient(): RedisClientType {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Get Redis (Race-condition safe)
+// Get Redis
 // ─────────────────────────────────────────────────────────────
 
 export async function getRedis(): Promise<RedisClientType> {
@@ -62,52 +60,75 @@ export async function getRedis(): Promise<RedisClientType> {
     redis = createRedisClient();
   }
 
-  // Already connected
-  if (redis.isOpen) {
+  if (redis.isReady) {
     return redis;
   }
 
-  // Prevent multiple simultaneous connections
   if (!connectPromise) {
+    const client = redis;
+
     connectPromise = (async () => {
       try {
-        await redis!.connect();
-        // Health check
-        await redis!.ping();
+        if (!client.isOpen) {
+          await client.connect();
+        }
+
+        await client.ping();
+
         console.log("[redis] Ping successful");
-        return redis!;
+
+        return client;
       } catch (err) {
         console.error("[redis] Failed to connect:", err);
         throw err;
       } finally {
-        // Always clear so future reconnect attempts are possible
         connectPromise = null;
       }
     })();
   }
+
   return connectPromise;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Graceful Shutdown (Production Critical)
+// Graceful Shutdown
+// Called centrally from index.ts.
 // ─────────────────────────────────────────────────────────────
 
-async function shutdown() {
-  if (redis && redis.isOpen) {
-    try {
-      console.log("[redis] Closing connection...");
-      await redis.quit();
-      console.log("[redis] Connection closed cleanly");
-    } catch (err) {
-      console.error("[redis] Error during shutdown:", err);
-    }
-  }
-}
+export async function closeRedis(): Promise<void> {
+  const client = redis;
 
-// Avoid duplicate listeners (important in dev/serverless)
-if (!process.listeners("SIGINT").includes(shutdown)) {
-  process.on("SIGINT", shutdown);
-}
-if (!process.listeners("SIGTERM").includes(shutdown)) {
-  process.on("SIGTERM", shutdown);
+  if (!client) {
+    return;
+  }
+
+  try {
+    // Wait for an existing connection attempt to settle.
+    if (connectPromise) {
+      try {
+        await connectPromise;
+      } catch {
+        // Connection failure is already logged by getRedis().
+      }
+    }
+
+    // Close the connection if it is still open.
+    if (client.isOpen) {
+      console.log("[redis] Closing connection...");
+
+      await client.quit();
+
+      console.log("[redis] Connection closed cleanly");
+    }
+  } catch (err) {
+    console.error("[redis] Error during shutdown:", err);
+
+    // Best-effort forced closure if graceful closure fails.
+    if (client.isOpen) {
+      client.destroy();
+    }
+  } finally {
+    redis = null;
+    connectPromise = null;
+  }
 }
