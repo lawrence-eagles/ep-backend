@@ -720,7 +720,7 @@ async function validateUrlRedirectChain(rawUrl: string): Promise<void> {
           redirect: "manual",
           headers: {
             Range: "bytes=0-0",
-            "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com",
+            "User-Agent": "Eaglespress/1.0 (+https://eaglespress.com)",
           },
         }),
         SCRAPE_TIMEOUT_MS,

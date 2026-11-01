@@ -159,6 +159,11 @@ async function shutdown(signal: string) {
 
   forceCloseTimer.unref();
 
+  const hardExitTimer = setTimeout(() => {
+    console.error("Graceful shutdown exceeded 25s. Forcing exit.");
+    process.exit(1);
+  }, 25_000);
+
   try {
     // 1. Stop accepting new requests and wait for active requests.
     await new Promise<void>((resolve, reject) => {
@@ -194,6 +199,8 @@ async function shutdown(signal: string) {
     await Promise.allSettled([closeRedis(), pool.end()]);
 
     process.exitCode = 1;
+  } finally {
+    clearTimeout(hardExitTimer);
   }
 }
 
