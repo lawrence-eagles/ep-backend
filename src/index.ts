@@ -141,7 +141,15 @@ poolMetricsInterval.unref();
 let isShuttingDown = false;
 
 async function shutdown(signal: string) {
-  if (isShuttingDown) return;
+  // If another shutdown signal arrives while cleanup is running,
+  // force termination instead of ignoring the signal indefinitely.
+  if (isShuttingDown) {
+    console.error(
+      `${signal} received while shutdown is already in progress. Forcing exit.`,
+    );
+
+    process.exit(1);
+  }
 
   isShuttingDown = true;
 
@@ -149,6 +157,7 @@ async function shutdown(signal: string) {
 
   clearInterval(poolMetricsInterval);
 
+  // Force-close remaining HTTP connections after 15 seconds.
   const forceCloseTimer = setTimeout(() => {
     console.warn(
       "Shutdown timeout reached. Closing remaining HTTP connections.",
@@ -159,10 +168,17 @@ async function shutdown(signal: string) {
 
   forceCloseTimer.unref();
 
+  // Hard deadline for the COMPLETE shutdown process.
+  // This covers HTTP, Redis, and PostgreSQL cleanup.
   const hardExitTimer = setTimeout(() => {
     console.error("Graceful shutdown exceeded 25s. Forcing exit.");
+
     process.exit(1);
   }, 25_000);
+
+  // Do not let this timer alone keep Node.js alive.
+  // It will still fire if other active handles keep the event loop running.
+  hardExitTimer.unref();
 
   try {
     // 1. Stop accepting new requests and wait for active requests.
@@ -193,16 +209,23 @@ async function shutdown(signal: string) {
 
     console.error("Error during graceful shutdown:", error);
 
+    // 4. Force-close remaining HTTP connections.
     server.closeAllConnections();
 
-    // Best-effort cleanup.
+    // 5. Attempt remaining cleanup operations.
+    // The hard-exit timer remains active if either operation hangs.
     await Promise.allSettled([closeRedis(), pool.end()]);
 
     process.exitCode = 1;
   } finally {
+    // Clear the hard deadline only after all cleanup attempts finish.
     clearTimeout(hardExitTimer);
   }
 }
+
+// ─────────────────────────────────────────────
+// PROCESS SIGNAL HANDLERS
+// ─────────────────────────────────────────────
 
 // Railway normally sends SIGTERM during deployments and restarts.
 process.on("SIGTERM", () => {
