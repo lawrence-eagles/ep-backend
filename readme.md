@@ -459,8 +459,4 @@ old flush cron timeouts for reference:
 timeouts: {
       start: "55s",
     },
-
-    "@better-auth/expo": "^1.6.23",
-    "better-auth": "^1.6.20",
-    "redis": "^6.0.0",
  -->
