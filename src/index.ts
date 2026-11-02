@@ -8,7 +8,7 @@ import { pool } from "./db";
 import { inngestHandler } from "./inngest/route";
 import { getEnv } from "./lib/env";
 import { auth } from "./lib/auth";
-import { closeRedis } from "./lib/redis";
+import { closeRedis, preventRedisReconnects } from "./lib/redis";
 
 import bookmarksRoutes from "./routes/bookmarksRoutes";
 import categoriesRoutes from "./routes/categoriesRoutes";
@@ -155,6 +155,9 @@ async function shutdown(signal: string) {
 
   console.log(`${signal} received. Shutting down gracefully...`);
 
+  // Prevent any new Redis clients or reconnection attempts immediately.
+  preventRedisReconnects();
+
   clearInterval(poolMetricsInterval);
 
   // Force-close remaining HTTP connections after 15 seconds.
@@ -168,7 +171,7 @@ async function shutdown(signal: string) {
 
   forceCloseTimer.unref();
 
-  // Hard deadline for the COMPLETE shutdown process.
+  // Hard deadline for the complete shutdown process.
   // This covers HTTP, Redis, and PostgreSQL cleanup.
   const hardExitTimer = setTimeout(() => {
     console.error("Graceful shutdown exceeded 25s. Forcing exit.");
@@ -177,7 +180,7 @@ async function shutdown(signal: string) {
   }, 25_000);
 
   // Do not let this timer alone keep Node.js alive.
-  // It will still fire if other active handles keep the event loop running.
+  // It can still fire if other active handles keep the event loop running.
   hardExitTimer.unref();
 
   try {
@@ -195,7 +198,7 @@ async function shutdown(signal: string) {
 
     clearTimeout(forceCloseTimer);
 
-    // 2. Close Redis.
+    // 2. Close the existing Redis connection.
     await closeRedis();
 
     // 3. Close PostgreSQL.
@@ -209,18 +212,19 @@ async function shutdown(signal: string) {
 
     console.error("Error during graceful shutdown:", error);
 
-    // 4. Force-close remaining HTTP connections.
+    // Force-close remaining HTTP connections.
     server.closeAllConnections();
 
-    // 5. Attempt remaining cleanup operations.
+    // Best-effort cleanup.
     // The hard-exit timer remains active if either operation hangs.
     await Promise.allSettled([closeRedis(), pool.end()]);
 
     process.exitCode = 1;
-  } finally {
-    // Clear the hard deadline only after all cleanup attempts finish.
-    clearTimeout(hardExitTimer);
   }
+
+  // Intentionally do not clear hardExitTimer.
+  // It remains unreferenced so background handles cannot keep the
+  // process alive indefinitely beyond the 25-second deadline.
 }
 
 // ─────────────────────────────────────────────
