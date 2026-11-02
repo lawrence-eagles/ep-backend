@@ -8,7 +8,7 @@ import { pool } from "./db";
 import { inngestHandler } from "./inngest/route";
 import { getEnv } from "./lib/env";
 import { auth } from "./lib/auth";
-import { closeRedis, preventRedisReconnects } from "./lib/redis";
+import { closeRedis } from "./lib/redis";
 
 import bookmarksRoutes from "./routes/bookmarksRoutes";
 import categoriesRoutes from "./routes/categoriesRoutes";
@@ -155,9 +155,6 @@ async function shutdown(signal: string) {
 
   console.log(`${signal} received. Shutting down gracefully...`);
 
-  // Prevent any new Redis clients or reconnection attempts immediately.
-  preventRedisReconnects();
-
   clearInterval(poolMetricsInterval);
 
   // Force-close remaining HTTP connections after 15 seconds.
@@ -185,6 +182,7 @@ async function shutdown(signal: string) {
 
   try {
     // 1. Stop accepting new requests and wait for active requests.
+    // Redis remains available to in-flight requests during this drain.
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -198,7 +196,9 @@ async function shutdown(signal: string) {
 
     clearTimeout(forceCloseTimer);
 
-    // 2. Close the existing Redis connection.
+    // 2. Close Redis.
+    // closeRedis() prevents new Redis connections and reconnection attempts
+    // before cleaning up the existing connection.
     await closeRedis();
 
     // 3. Close PostgreSQL.
