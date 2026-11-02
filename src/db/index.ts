@@ -6,7 +6,18 @@ import { getEnv } from "../lib/env";
 
 const env = getEnv();
 
-const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
+export const pool = new pg.Pool({
+  connectionString: env.DATABASE_URL,
+
+  max: 5,
+  connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000,
+  keepAlive: true,
+});
+
+pool.on("error", (error) => {
+  console.error("Unexpected PostgreSQL pool error:", error);
+});
 
 export { schema };
 

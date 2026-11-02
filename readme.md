@@ -452,6 +452,7 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 8. add open ai key ✅
 9. test eaglespress fully.
 10. migrate to railway later.
+11. Implement all necessary upgrades for horizontal scaling. ✅
  -->
 
 <!--
@@ -459,8 +460,4 @@ old flush cron timeouts for reference:
 timeouts: {
       start: "55s",
     },
-
-    "@better-auth/expo": "^1.6.23",
-    "better-auth": "^1.6.20",
-    "redis": "^6.0.0",
  -->
