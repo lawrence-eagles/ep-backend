@@ -222,9 +222,11 @@ async function shutdown(signal: string) {
     process.exitCode = 1;
   }
 
-  // Intentionally do not clear hardExitTimer.
-  // It remains unreferenced so background handles cannot keep the
-  // process alive indefinitely beyond the 25-second deadline.
+  // new addition
+  // Cancel the hard deadline only after all cleanup has completed.
+  // If cleanup hangs, execution never reaches this line,
+  // allowing the timer to force termination after 25 seconds.
+  clearTimeout(hardExitTimer);
 }
 
 // ─────────────────────────────────────────────
