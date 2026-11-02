@@ -226,8 +226,18 @@ export async function closeRedis(): Promise<void> {
 
       // Best-effort forced closure if graceful closure fails.
       if (client.isOpen) {
-        client.destroy();
+        try {
+          client.destroy();
+        } catch (destroyError) {
+          console.error(
+            "[redis] Error while force-closing connection:",
+            destroyError,
+          );
+        }
       }
+
+      // Propagate the original graceful shutdown error.
+      throw err;
     } finally {
       // Release references to the closed client.
       if (redis === client) {
