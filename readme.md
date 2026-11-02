@@ -452,6 +452,7 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 8. add open ai key ✅
 9. test eaglespress fully.
 10. migrate to railway later.
+11. Implement all necessary upgrades for horizontal scaling. ✅
  -->
 
 <!--
