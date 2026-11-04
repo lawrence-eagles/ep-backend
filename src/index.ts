@@ -25,6 +25,7 @@ import registerDeviceTokenRoute from "./routes/deviceTokenRoutes";
 import singlePostRoutes from "./routes/singlePostRoutes";
 import imageKitRoutes from "./routes/imageKitRoutes";
 import userAvatarRouter from "./routes/userAvatarRoutes";
+import userBlockRoutes from "./routes/userBlock";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -90,10 +91,9 @@ app.get("/health", (_req, res) => {
 app.use("/auth", imageKitRoutes);
 app.use("/api/user", userAvatarRouter);
 app.use("/app", appShareRoutes);
+app.use("/api/v1/users", userBlockRoutes);
 app.use("/api/v1/push", registerDeviceTokenRoute);
-
 app.use("/api/v1/after-auth", afterAuthCallback);
-
 app.use("/api/v1/posts", feedsRoutes);
 app.use("/api/v1/bookmarks", bookmarksRoutes);
 app.use("/api/v1/categories", categoriesRoutes);
