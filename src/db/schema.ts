@@ -16,6 +16,7 @@ import {
   AnyPgColumn,
   pgEnum,
   foreignKey,
+  check,
 } from "drizzle-orm/pg-core";
 import {
   relations,
@@ -98,6 +99,44 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
 // BETTER AUTH GENERATED TABLES END.
+
+// Block and Unblock Table
+export const userBlocks = pgTable(
+  "user_blocks",
+  {
+    blockerId: text("blocker_id")
+      .notNull()
+      .references(() => user.id, {
+        onDelete: "cascade",
+      }),
+
+    blockedId: text("blocked_id")
+      .notNull()
+      .references(() => user.id, {
+        onDelete: "cascade",
+      }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.blockerId, table.blockedId],
+    }),
+
+    index("user_blocks_blocker_id_idx").on(table.blockerId),
+
+    index("user_blocks_blocked_id_idx").on(table.blockedId),
+
+    check(
+      "user_blocks_no_self_block",
+      sql`${table.blockerId} <> ${table.blockedId}`,
+    ),
+  ],
+);
 
 // UUID version 7 helper function
 export const uuidV7PrimaryKey = () =>

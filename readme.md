@@ -453,6 +453,9 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 9. test eaglespress fully.
 10. migrate to railway later.
 11. Implement all necessary upgrades for horizontal scaling. ✅
+12. Nested replies: Your existing controller only fetches:
+WHERE r.parent_id = c.id
+That retrieves direct replies to root comments, not grandchildren.
  -->
 
 <!--
