@@ -203,3 +203,45 @@ export function buildCategoryFeedKey(
 ) {
   return `feed:v1:category:${userId}:${categoryId}:uv${userVersion}:cv${categoryVersion}:${cursor ?? "first"}`;
 }
+
+export interface InvalidateModeratedCommentCachesInput {
+  postId: string;
+  slug: string;
+  categoryId: string | null;
+  commentIds: string[];
+}
+
+export async function invalidateModeratedCommentCaches(
+  input: InvalidateModeratedCommentCachesInput,
+): Promise<void> {
+  try {
+    const redis = await getRedis();
+
+    const ttl = 60 * 60 * 24 * 30;
+    const multi = redis.multi();
+
+    const versionKeys = [
+      `comments:${input.postId}:version`,
+      `post:${input.slug}:version`,
+      "feed:trending:version",
+      "feed:global:version",
+    ];
+
+    if (input.categoryId) {
+      versionKeys.push(`category:${input.categoryId}:version`);
+    }
+
+    for (const key of versionKeys) {
+      multi.incr(key);
+      multi.expire(key, ttl);
+    }
+
+    for (const commentId of input.commentIds) {
+      multi.del(`comment:${commentId}`);
+    }
+
+    await multi.exec();
+  } catch (error) {
+    console.error("[cache] MODERATED_COMMENT_INVALIDATION_ERROR:", error);
+  }
+}

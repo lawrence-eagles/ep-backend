@@ -7,12 +7,12 @@ import {
   getBlockStatusController,
 } from "../controllers/userBlock";
 
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 
 const router = Router();
 
 // All endpoints require authentication.
-router.use(authUser);
+router.use(requireAuth);
 
 // Block a user.
 router.post("/:userId/block", blockUserController);

@@ -1,8 +1,8 @@
 import express from "express";
 import { generateSignature } from "../controllers/imageKitController";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 const router = express.Router();
 
-router.get("/", authUser, generateSignature);
+router.get("/", requireAuth, generateSignature);
 
 export default router;

@@ -17,6 +17,7 @@ import {
   pgEnum,
   foreignKey,
   check,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import {
   relations,
@@ -100,7 +101,43 @@ export const verification = pgTable(
 );
 // BETTER AUTH GENERATED TABLES END.
 
+// -------------------------------
+// Ban users table
+// -------------------------------
+export const userCommentBans = pgTable(
+  "user_comment_bans",
+  {
+    // One active restriction record per user.
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    bannedBy: text("banned_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
+    reason: text("reason").notNull(),
+
+    bannedAt: timestamp("banned_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    // NULL means the restriction does not expire.
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    index("user_comment_bans_banned_at_idx").on(table.bannedAt.desc()),
+    index("user_comment_bans_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+// --------------------------------
 // Block and Unblock Table
+// --------------------------------
 export const userBlocks = pgTable(
   "user_blocks",
   {
@@ -144,6 +181,221 @@ export const uuidV7PrimaryKey = () =>
     .primaryKey()
     .notNull()
     .default(sql`uuidv7()`);
+
+// ─────────────────────────────────────────────
+// REPORTING AND MODERATION BEGINS
+// ─────────────────────────────────────────────
+
+export const reportTargetTypeEnum = pgEnum("report_target_type", [
+  "post",
+  "comment",
+  "user",
+]);
+
+export const reportReasonEnum = pgEnum("report_reason", [
+  "spam",
+  "harassment_bullying",
+  "hate_speech",
+  "violence_dangerous_content",
+  "nudity_sexual_content",
+  "misinformation",
+  "impersonation",
+  "inappropriate_content",
+  "other",
+]);
+
+export const reportStatusEnum = pgEnum("report_status", [
+  "pending",
+  "in_review",
+  "resolved",
+  "dismissed",
+]);
+
+// A single table handles reports against posts, comments, replies and users.
+export const reports = pgTable(
+  "reports",
+  {
+    id: uuidV7PrimaryKey(),
+
+    // Nullable so a report can remain available if its reporter deletes
+    // their account.
+    reporterId: text("reporter_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
+    targetType: reportTargetTypeEnum("target_type").notNull(),
+
+    // UUID for posts/comments; Better Auth text ID for users.
+    // Deliberately polymorphic: target records may be deleted while
+    // the moderation record must remain available.
+    targetId: text("target_id").notNull(),
+
+    reason: reportReasonEnum("reason").notNull(),
+
+    details: text("details"),
+
+    // A small snapshot helps moderators understand a report even if
+    // the original content is later deleted.
+    targetSnapshot: text("target_snapshot"),
+
+    status: reportStatusEnum("status").notNull().default("pending"),
+
+    reviewedBy: text("reviewed_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
+    reviewedAt: timestamp("reviewed_at", {
+      withTimezone: true,
+    }),
+
+    resolvedAt: timestamp("resolved_at", {
+      withTimezone: true,
+    }),
+
+    resolutionNotes: text("resolution_notes"),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("reports_status_created_idx").on(
+      table.status,
+      table.createdAt.desc(),
+    ),
+
+    index("reports_target_idx").on(table.targetType, table.targetId),
+
+    index("reports_reporter_idx").on(table.reporterId),
+
+    // A user can report a particular target only once.
+    // A nullable reporter ID allows reports to survive account deletion.
+    uniqueIndex("reports_reporter_target_unique")
+      .on(table.reporterId, table.targetType, table.targetId)
+      .where(sql`${table.reporterId} IS NOT NULL`),
+  ],
+);
+
+export const moderationActions = pgTable(
+  "moderation_actions",
+  {
+    id: uuidV7PrimaryKey(),
+
+    moderatorId: text("moderator_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
+    actionType: text("action_type").notNull(),
+
+    targetType: text("target_type").notNull(),
+
+    targetId: text("target_id").notNull(),
+
+    commentId: uuid("comment_id").references(() => comments.id, {
+      onDelete: "set null",
+    }),
+
+    reportId: uuid("report_id").references(() => reports.id, {
+      onDelete: "set null",
+    }),
+
+    reason: text("reason").notNull(),
+
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("moderation_actions_moderator_idx").on(
+      table.moderatorId,
+      table.createdAt.desc(),
+    ),
+
+    index("moderation_actions_comment_idx").on(
+      table.commentId,
+      table.createdAt.desc(),
+    ),
+
+    index("moderation_actions_report_idx").on(table.reportId),
+
+    index("moderation_actions_target_idx").on(table.targetType, table.targetId),
+  ],
+);
+
+// A user's personal hidden-comment preferences.
+// This does NOT delete or modify the original comment.
+export const userHiddenComments = pgTable(
+  "user_hidden_comments",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, {
+        onDelete: "cascade",
+      }),
+
+    commentId: uuid("comment_id")
+      .notNull()
+      .references(() => comments.id, {
+        onDelete: "cascade",
+      }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.commentId],
+    }),
+
+    index("user_hidden_comments_comment_idx").on(table.commentId),
+  ],
+);
+
+// Moderators are stored separately from Better Auth users.
+// Initial administrators are configured through an environment variable.
+export const moderatorRoles = pgTable(
+  "moderator_roles",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => user.id, {
+        onDelete: "cascade",
+      }),
+
+    grantedBy: text("granted_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("moderator_roles_granted_by_idx").on(table.grantedBy)],
+);
+// ─────────────────────────────────────────────
+// REPORTING AND MODERATION ENDS
+// ─────────────────────────────────────────────
 
 // Deletion ledger / tombstone table
 // This records: "User X has been confirmed as permanently deleted."
@@ -552,6 +804,17 @@ export const comments = pgTable(
     }),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
+
+    // Moderation soft deletion
+    isDeleted: boolean("is_deleted").notNull().default(false),
+
+    deletedAt: timestamp("deleted_at", {
+      withTimezone: true,
+    }),
+
+    deletedBy: text("deleted_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
   },
   (t) => [
     index("idx_comments_post_id").on(t.postId),

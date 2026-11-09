@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { likeCommentVersionOne } from "../controllers/comments/commentsLikesController";
 import { unlikeCommentVersionOne } from "../controllers/comments/commentsUnlikesController";
 
 const router = Router();
-router.use(authUser);
+router.use(requireAuth);
 
 router.post("/", likeCommentVersionOne);
 router.delete("/:commentId", unlikeCommentVersionOne);

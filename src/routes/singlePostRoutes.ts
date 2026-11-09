@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { singlePostControllerVersionOne } from "../controllers/singlePostController";
 
 const router = Router();
 
-router.post("/", authUser, singlePostControllerVersionOne);
+router.post("/", requireAuth, singlePostControllerVersionOne);
 
 export default router;

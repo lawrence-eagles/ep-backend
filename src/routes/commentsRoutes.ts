@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { createCommentVersionOne } from "../controllers/comments/createCommentsController";
 import { deleteCommentVersionOne } from "../controllers/comments/deleteCommentsController";
 import { updateCommentVersionOne } from "../controllers/comments/updateCommentsController";
@@ -7,7 +7,7 @@ import { fetchCommentsVersionOne } from "../controllers/comments/fetchCommentsCo
 
 const router = Router();
 
-router.use(authUser);
+router.use(requireAuth);
 
 router.get("/:postId", fetchCommentsVersionOne);
 router.post("/:postId", createCommentVersionOne);

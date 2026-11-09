@@ -1,12 +1,12 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import {
   likeVersionOne,
   unlikeVersionOne,
 } from "../controllers/likesController";
 
 const router = Router();
-router.use(authUser);
+router.use(requireAuth);
 
 router.post("/", likeVersionOne);
 router.delete("/:postId", unlikeVersionOne);

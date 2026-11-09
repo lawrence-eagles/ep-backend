@@ -1,9 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
-import { fromNodeHeaders } from "better-auth/node";
-
-import { auth } from "../lib/auth";
 import { updateUserAvatar } from "../services/userAvatar.service";
 import { updateAvatarSchema } from "../validators/user.validator";
+import { z } from "zod";
+
+function getUserId(req: Request): string | null {
+  return req.user?.id ?? null;
+}
 
 export async function updateUserAvatarController(
   req: Request,
@@ -11,17 +13,11 @@ export async function updateUserAvatarController(
   next: NextFunction,
 ): Promise<void> {
   try {
-    /*
-     * Resolve the Better Auth session from the
-     * incoming request headers.
-     */
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders(req.headers),
-    });
+    const userId = getUserId(req);
 
-    if (!session) {
+    if (!userId) {
       res.status(401).json({
-        error: "Unauthorized",
+        error: "Unauthorized user",
       });
       return;
     }
@@ -34,7 +30,7 @@ export async function updateUserAvatarController(
     if (!parsed.success) {
       res.status(400).json({
         error: "Invalid request",
-        issues: parsed.error.flatten(),
+        issues: z.treeifyError(parsed.error),
       });
       return;
     }
@@ -43,7 +39,7 @@ export async function updateUserAvatarController(
      * Perform the server-side ImageKit ownership
      * validation and transactional database update.
      */
-    const updatedUser = await updateUserAvatar(session.user.id, parsed.data);
+    const updatedUser = await updateUserAvatar(userId, parsed.data);
 
     res.status(200).json({
       user: updatedUser,

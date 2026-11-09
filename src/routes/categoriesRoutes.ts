@@ -1,11 +1,11 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { categoryVersionOne } from "../controllers/categoriesController";
 import { categoryFeedVersionOne } from "../controllers/feeds/categoriesFeedController";
 
 const router = Router();
 
-router.use(authUser);
+router.use(requireAuth);
 
 router.get("/", categoryVersionOne);
 router.get("/:categoryId", categoryFeedVersionOne);

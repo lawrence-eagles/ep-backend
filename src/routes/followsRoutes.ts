@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import {
   followVersionOne,
   unfollowVersionOne,
@@ -7,7 +7,7 @@ import {
 
 const router = Router();
 
-router.use(authUser);
+router.use(requireAuth);
 
 router.post("/", followVersionOne);
 router.delete("/:categoryId", unfollowVersionOne);

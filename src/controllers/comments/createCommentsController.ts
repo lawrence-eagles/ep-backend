@@ -29,6 +29,7 @@ async function getRedisSafe() {
 // =========================
 async function rateLimit(userId: string, action: string): Promise<void> {
   const redis = await getRedisSafe();
+
   if (!redis) return; // fail open
 
   const key = `rate:${action}:${userId}`;
@@ -42,7 +43,8 @@ async function rateLimit(userId: string, action: string): Promise<void> {
     }
   } catch (err) {
     console.error("RATE LIMIT ERROR:", err);
-    // fail open
+
+    // Fail open if Redis is unavailable.
     return;
   }
 
@@ -52,7 +54,7 @@ async function rateLimit(userId: string, action: string): Promise<void> {
 }
 
 // =========================
-// 🚀 CONTROLLER
+// 🚀 CREATE COMMENT CONTROLLER
 // =========================
 export const createCommentVersionOne = async (req: Request, res: Response) => {
   try {
@@ -60,13 +62,15 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
     // 1. AUTH
     // =========================
     if (!req.user?.id) {
-      return res.status(401).json({ error: "Unauthorized user" });
+      return res.status(401).json({
+        error: "Unauthorized user",
+      });
     }
 
     const userId = req.user.id;
 
     // =========================
-    // 2. PARAM NORMALIZATION (FIXED BUG)
+    // 2. PARAM NORMALIZATION
     // =========================
     let { postId } = req.params;
 
@@ -75,7 +79,9 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
     }
 
     if (!postId || !UUID_RE.test(postId)) {
-      return res.status(400).json({ error: "Invalid postId" });
+      return res.status(400).json({
+        error: "Invalid postId",
+      });
     }
 
     const { content, parentId } = req.body;
@@ -83,22 +89,38 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
     // =========================
     // 3. VALIDATION
     // =========================
+
+    // Validate comment content.
     if (typeof content !== "string") {
-      return res.status(400).json({ error: "Missing content" });
+      return res.status(400).json({
+        error: "Missing content",
+      });
     }
 
     const trimmedContent = content.trim();
 
     if (!trimmedContent) {
-      return res.status(400).json({ error: "Empty comment" });
+      return res.status(400).json({
+        error: "Empty comment",
+      });
     }
 
     if (trimmedContent.length > MAX_COMMENT_LENGTH) {
-      return res.status(400).json({ error: "Comment too long" });
+      return res.status(400).json({
+        error: "Comment too long",
+      });
     }
 
-    if (parentId && (!UUID_RE.test(parentId) || typeof parentId !== "string")) {
-      return res.status(400).json({ error: "Invalid parentId" });
+    // Validate parentId without passing non-string values
+    // into the UUID regular expression.
+    if (
+      parentId !== undefined &&
+      parentId !== null &&
+      (typeof parentId !== "string" || !UUID_RE.test(parentId))
+    ) {
+      return res.status(400).json({
+        error: "Invalid parentId",
+      });
     }
 
     // =========================
@@ -107,14 +129,41 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
     await rateLimit(userId, "create_comment");
 
     let createdComment: Record<string, unknown> | null = null;
-    let slug: string = "";
+    let slug = "";
     let categoryId: string | null = null;
 
     // =========================
     // 5. TRANSACTION
     // =========================
     await db.transaction(async (tx) => {
-      // 🔍 Get post
+      // =========================
+      // 5A. USER-LEVEL ADVISORY LOCK
+      // =========================
+      // Serialize comment creation against ban/unban operations
+      // for this user across all API replicas.
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`comment-ban:${userId}`}, 0)
+        )
+      `);
+
+      // Check whether the authenticated user has an active comment restriction.
+      const commentBanResult = await tx.execute<{ user_id: string }>(sql`
+        SELECT user_id
+        FROM user_comment_bans
+        WHERE user_id = ${userId}
+          AND (
+            expires_at IS NULL
+            OR expires_at > NOW()
+          )
+        LIMIT 1
+      `);
+
+      if (commentBanResult.rows.length > 0) {
+        throw new Error("USER_COMMENT_BANNED");
+      }
+
+      // Retrieve the post.
       const postResult = await tx.execute(sql`
         SELECT slug, category_id
         FROM posts
@@ -138,14 +187,32 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
       slug = row.slug;
       categoryId = typeof row.category_id === "string" ? row.category_id : null;
 
-      // 🔍 Validate parent comment
+      // =========================
+      // 5B. POST-LEVEL ADVISORY LOCK
+      // =========================
+      // Serialize comment creation with moderation deletion
+      // for this post across all Railway replicas.
+      //
+      // This is a transaction-level lock, so PostgreSQL
+      // automatically releases it when the transaction ends.
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${postId}, 0)
+        )
+      `);
+
+      // =========================
+      // 5C. VALIDATE PARENT COMMENT
+      // =========================
+      // Allow replies to root comments and nested replies.
+      // Reject comments that are deleted or belong to another post.
       if (parentId) {
         const parent = await tx.execute(sql`
-          SELECT id FROM comments
+          SELECT id
+          FROM comments
           WHERE id = ${parentId}
             AND post_id = ${postId}
-            AND post_id = ${postId}
-            AND parent_id IS NULL
+            AND is_deleted = FALSE
           LIMIT 1
         `);
 
@@ -154,10 +221,22 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
         }
       }
 
-      // ➕ Insert comment
+      // =========================
+      // 5D. INSERT COMMENT
+      // =========================
       const insert = await tx.execute(sql`
-        INSERT INTO comments (content, user_id, post_id, parent_id)
-        VALUES (${trimmedContent}, ${userId}, ${postId}, ${parentId ?? null})
+        INSERT INTO comments (
+          content,
+          user_id,
+          post_id,
+          parent_id
+        )
+        VALUES (
+          ${trimmedContent},
+          ${userId},
+          ${postId},
+          ${parentId ?? null}
+        )
         RETURNING *
       `);
 
@@ -167,27 +246,41 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
 
       createdComment = insert.rows[0] as Record<string, unknown>;
 
-      // 🔥 Update post stats
+      // =========================
+      // 5E. UPDATE POST STATISTICS
+      // =========================
       await tx.execute(sql`
         UPDATE posts
-        SET score = score + 7,
-            comments_count = comments_count + 1
+        SET
+          score = score + 7,
+          comments_count = comments_count + 1
         WHERE id = ${postId}
       `);
 
-      // 🔥 Update user behavior
+      // =========================
+      // 5F. UPDATE USER BEHAVIOR
+      // =========================
       if (categoryId) {
         await tx.execute(sql`
-          INSERT INTO user_behavior (user_id, category_id, score)
-          VALUES (${userId}, ${categoryId}, 7)
+          INSERT INTO user_behavior (
+            user_id,
+            category_id,
+            score
+          )
+          VALUES (
+            ${userId},
+            ${categoryId},
+            7
+          )
           ON CONFLICT (user_id, category_id)
-          DO UPDATE SET score = user_behavior.score + 7
+          DO UPDATE SET
+            score = user_behavior.score + 7
         `);
       }
     });
 
     // =========================
-    // 6. CACHE INVALIDATION (NODE-REDIS SAFE)
+    // 6. CACHE INVALIDATION
     // =========================
     const redis = await getRedisSafe();
 
@@ -196,30 +289,35 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
         const ttl = 60 * 60 * 24 * 30;
         const multi = redis.multi();
 
+        // Comment cache.
         multi.incr(`comments:${postId}:version`);
         multi.expire(`comments:${postId}:version`, ttl);
 
+        // Individual post cache.
         multi.incr(`post:${slug}:version`);
         multi.expire(`post:${slug}:version`, ttl);
 
+        // User feed cache.
         multi.incr(`feed:${userId}:version`);
         multi.expire(`feed:${userId}:version`, ttl);
 
-        multi.incr(`feed:trending:version`);
-        multi.expire(`feed:trending:version`, ttl);
+        // Trending feed cache.
+        multi.incr("feed:trending:version");
+        multi.expire("feed:trending:version", ttl);
 
         if (categoryId) {
+          // User category feed cache.
           multi.incr(`category_feed:${userId}:version`);
           multi.expire(`category_feed:${userId}:version`, ttl);
 
-          // ✅ NEW (critical fix)
+          // Global category cache.
           multi.incr(`category:${categoryId}:version`);
           multi.expire(`category:${categoryId}:version`, ttl);
         }
 
         await multi.exec();
       } catch (err) {
-        console.error("REDIS INVALIDATION ERROR:", err);
+        console.error("[comments] REDIS INVALIDATION ERROR:", err);
       }
     }
 
@@ -233,16 +331,28 @@ export const createCommentVersionOne = async (req: Request, res: Response) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "";
 
+    if (message === "USER_COMMENT_BANNED") {
+      return res.status(403).json({
+        error: "You are currently restricted from commenting.",
+      });
+    }
+
     if (message === "Too many requests") {
-      return res.status(429).json({ error: message });
+      return res.status(429).json({
+        error: message,
+      });
     }
 
     if (message === "POST_NOT_FOUND") {
-      return res.status(404).json({ error: "Post not found" });
+      return res.status(404).json({
+        error: "Post not found",
+      });
     }
 
     if (message === "INVALID_PARENT") {
-      return res.status(400).json({ error: "Invalid parent comment" });
+      return res.status(400).json({
+        error: "Invalid parent comment",
+      });
     }
 
     console.error("[comments] CREATE error:", err);
