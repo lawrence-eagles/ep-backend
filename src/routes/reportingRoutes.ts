@@ -5,7 +5,7 @@ import { requireAuth } from "../middleware/requireAuth";
 import {
   submitReportController,
   getMyReportsController,
-} from "../controllers/reportingController";
+} from "../controllers/moderation/reportingController";
 
 const router = Router();
 

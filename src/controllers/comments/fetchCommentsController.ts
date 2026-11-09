@@ -818,7 +818,9 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
 
       replyNodeMap.set(row.id, node);
 
-      replyPaginationMap.set(row.id, {
+      // Pagination metadata belongs to the parent whose children
+      // are represented by this row, not to the row itself.
+      replyPaginationMap.set(row.parent_id, {
         hasMore: Number(row.sibling_count) > REPLIES_PAGE_SIZE,
       });
     }

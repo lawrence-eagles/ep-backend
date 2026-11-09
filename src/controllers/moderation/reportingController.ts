@@ -1,15 +1,15 @@
 import type { Request, Response } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "../db";
+import { db } from "../../db";
 import {
   comments,
   posts,
   user,
   reports,
   userHiddenComments,
-} from "../db/schema";
-import { getRedis } from "../lib/redis";
+} from "../../db/schema";
+import { getRedis } from "../../lib/redis";
 
 // ─────────────────────────────────────────────
 // VALIDATION
@@ -66,7 +66,8 @@ async function canSubmitReport(userId: string): Promise<boolean> {
     const key = `report:rate:${userId}`;
     const count = await redis.incr(key);
 
-    if (count === 1) {
+    // Self-heal: set the TTL if the key has none.
+    if (count === 1 || (await redis.ttl(key)) === -1) {
       await redis.expire(key, 60 * 60);
     }
 

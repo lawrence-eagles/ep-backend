@@ -1,8 +1,8 @@
 import type { Request, Response } from "express";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "../db";
-import { comments, userHiddenComments } from "../db/schema";
+import { db } from "../../db";
+import { comments, userHiddenComments } from "../../db/schema";
 
 // ─────────────────────────────────────────────
 // VALIDATION

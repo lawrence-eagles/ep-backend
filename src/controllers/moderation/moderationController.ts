@@ -1,8 +1,8 @@
 import type { Request, Response } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "../db";
-import { reports, moderatorRoles, user } from "../db/schema";
+import { db } from "../../db";
+import { reports, moderatorRoles, user } from "../../db/schema";
 
 // ─────────────────────────────────────────────
 // HELPERS

@@ -311,7 +311,10 @@ export const deleteModeratedCommentController = async (
           resolution_notes = ${reason},
           updated_at = NOW()
         WHERE target_type = 'comment'
-          AND target_id = ANY(${deletedIds}::text[])
+          AND target_id IN (${sql.join(
+            deletedIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
           AND status IN ('pending', 'in_review')
         RETURNING id
       `);
