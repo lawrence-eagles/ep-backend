@@ -157,7 +157,6 @@ function decodeCursor(cursor: string): Cursor {
  *
  * No Redis SCAN or explicit cache invalidation is required.
  */
-
 async function getPersonalizationSignature(userId: string): Promise<string> {
   const result = await db.execute(sql`
     SELECT
@@ -273,6 +272,26 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     }
 
     // ─────────────────────────────────────────────────────────
+    // VALIDATE PARENT ID
+    // ─────────────────────────────────────────────────────────
+
+    const parentIdParam = req.query.parentId;
+
+    if (parentIdParam !== undefined && typeof parentIdParam !== "string") {
+      return res.status(400).json({
+        error: "Invalid parentId",
+      });
+    }
+
+    const parentId = parentIdParam as string | undefined;
+
+    if (parentId !== undefined && !UUID_RE.test(parentId)) {
+      return res.status(400).json({
+        error: "Invalid parentId",
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────
     // VALIDATE CURSOR
     // ─────────────────────────────────────────────────────────
 
@@ -305,6 +324,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
     // This check must happen before the Redis cache lookup.
     // Otherwise, a previously cached comment response could allow
     // a restricted user to continue viewing comments.
+
     if (userId) {
       const commentBanResult = await db.execute<{ user_id: string }>(sql`
         SELECT user_id
@@ -320,6 +340,7 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       if (commentBanResult.rows.length > 0) {
         // Do not read from or write to the comment cache for
         // users with an active comment restriction.
+
         return res.json({
           comments: [],
           nextCursor: null,
@@ -341,27 +362,19 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       cacheUserId = `${userId}:personalization:${personalizationSignature}`;
     }
 
-    const cacheKey = await buildCommentsKey(
-      postId,
-      cursor ?? null,
-      cacheUserId,
-    );
+    /**
+     * Root comment requests and parent-scoped reply requests
+     * must have different cache keys.
+     *
+     * The parent ID is included in the reply cache scope so
+     * replies belonging to different parents cannot share cache
+     * entries.
+     */
+    const cacheCursor = parentId
+      ? `replies:${parentId}:${cursor ?? "first"}`
+      : (cursor ?? null);
 
-    // ─────────────────────────────────────────────────────────
-    // REDIS CACHE GET
-    // ─────────────────────────────────────────────────────────
-
-    if (redis) {
-      try {
-        const cached = await redis.get(cacheKey);
-
-        if (cached) {
-          return res.json(JSON.parse(cached));
-        }
-      } catch (err) {
-        console.error("REDIS GET ERROR:", err);
-      }
-    }
+    const cacheKey = await buildCommentsKey(postId, cacheCursor, cacheUserId);
 
     // ─────────────────────────────────────────────────────────
     // BLOCK FILTER CONDITIONS
@@ -401,6 +414,306 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         `
       : sql``;
 
+    const replyBlockFilter = userId
+      ? sql`
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE ub.blocker_id = ${userId}
+              AND ub.blocked_id = r.user_id
+          )
+        `
+      : sql``;
+
+    const replyHiddenFilter = userId
+      ? sql`
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_hidden_comments uh
+            WHERE uh.user_id = ${userId}
+              AND uh.comment_id = r.id
+          )
+        `
+      : sql``;
+
+    // ─────────────────────────────────────────────────────────
+    // PARENT-SCOPED REPLY PAGINATION
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * When parentId is supplied, this branch fetches the next
+     * page of replies belonging to that specific parent.
+     *
+     * This supports:
+     *
+     * - Replies belonging to root comments.
+     * - Replies belonging to direct replies.
+     * - Replies belonging to grandchildren.
+     * - Replies belonging to any subsequent nesting level.
+     *
+     * The cursor is applied to the selected parent's children,
+     * rather than to root comments.
+     *
+     * Visibility checks are performed on the parent and its
+     * complete ancestor chain before returning any children.
+     */
+
+    if (parentId) {
+      // ───────────────────────────────────────────────────────
+      // VALIDATE PARENT VISIBILITY AND OWNERSHIP
+      // ───────────────────────────────────────────────────────
+
+      const parentBlockVisibility = userId
+        ? sql`
+            OR EXISTS (
+              SELECT 1
+              FROM user_blocks ub
+              WHERE ub.blocker_id = ${userId}
+                AND ub.blocked_id = pc.user_id
+            )
+          `
+        : sql``;
+
+      const parentHiddenVisibility = userId
+        ? sql`
+            OR EXISTS (
+              SELECT 1
+              FROM user_hidden_comments uh
+              WHERE uh.user_id = ${userId}
+                AND uh.comment_id = pc.id
+            )
+          `
+        : sql``;
+
+      /**
+       * Walk from the requested parent towards the root.
+       *
+       * A parent is accessible only if:
+       * - It belongs to the requested post.
+       * - It exists.
+       * - It and every ancestor are not soft-deleted.
+       * - It and every ancestor are not hidden by this user.
+       * - It and every ancestor pass the block filter.
+       * - The ancestry reaches a root comment.
+       *
+       * This prevents clients from using a known parent ID
+       * to retrieve replies beneath an inaccessible comment.
+       *
+       * The path array also protects against circular ancestry.
+       */
+
+      const parentVisibilityResult = await db.execute(sql`
+        WITH RECURSIVE parent_chain AS (
+
+          SELECT
+            p.id,
+            p.parent_id,
+            p.post_id,
+            p.user_id,
+            p.is_deleted,
+
+            ARRAY[p.id]::uuid[] AS path
+
+          FROM comments p
+
+          WHERE p.id = ${parentId}::uuid
+            AND p.post_id = ${postId}::uuid
+
+          UNION ALL
+
+          SELECT
+            ancestor.id,
+            ancestor.parent_id,
+            ancestor.post_id,
+            ancestor.user_id,
+            ancestor.is_deleted,
+
+            chain.path || ancestor.id
+
+          FROM comments ancestor
+
+          JOIN parent_chain chain
+            ON ancestor.id = chain.parent_id
+
+          WHERE ancestor.post_id = ${postId}::uuid
+            AND NOT (ancestor.id = ANY(chain.path))
+        )
+
+        SELECT
+
+          EXISTS (
+            SELECT 1
+            FROM parent_chain
+          ) AS parent_exists,
+
+          EXISTS (
+            SELECT 1
+            FROM parent_chain
+            WHERE parent_id IS NULL
+          ) AS reaches_root,
+
+          NOT EXISTS (
+            SELECT 1
+            FROM parent_chain pc
+            WHERE pc.is_deleted = TRUE
+              ${parentBlockVisibility}
+              ${parentHiddenVisibility}
+          ) AS is_visible
+      `);
+
+      const parentVisibility = parentVisibilityResult.rows[0];
+
+      const parentExists = parentVisibility?.parent_exists === true;
+      const reachesRoot = parentVisibility?.reaches_root === true;
+      const parentIsVisible = parentVisibility?.is_visible === true;
+
+      if (!parentExists || !reachesRoot || !parentIsVisible) {
+        return res.status(404).json({
+          error: "Comment not found",
+        });
+      }
+
+      // ───────────────────────────────────────────────────────
+      // REDIS CACHE GET
+      // ───────────────────────────────────────────────────────
+
+      if (redis) {
+        try {
+          const cached = await redis.get(cacheKey);
+
+          if (cached) {
+            return res.json(JSON.parse(cached));
+          }
+        } catch (err) {
+          console.error("REDIS GET ERROR:", err);
+        }
+      }
+
+      // ───────────────────────────────────────────────────────
+      // REPLY CURSOR CONDITION
+      // ───────────────────────────────────────────────────────
+
+      const replyCursorCondition = decodedCursor
+        ? sql`
+            AND (r.created_at, r.id) < (
+              ${decodedCursor.created_at}::timestamptz,
+              ${decodedCursor.id}::uuid
+            )
+          `
+        : sql``;
+
+      // ───────────────────────────────────────────────────────
+      // FETCH NEXT PAGE OF REPLIES
+      // ───────────────────────────────────────────────────────
+
+      /**
+       * Fetch five visible children plus one additional row.
+       *
+       * The sixth row is used only to determine hasMore.
+       *
+       * Filtering happens before ORDER BY, window counting
+       * and LIMIT so deleted, blocked and hidden replies
+       * do not consume the five-reply page limit.
+       *
+       * The composite cursor guarantees deterministic
+       * pagination using created_at and id.
+       */
+
+      const repliesResult = await db.execute(sql`
+        SELECT
+
+          r.id,
+          r.created_at,
+          r.content,
+          r.user_id,
+          r.parent_id,
+
+          u.image AS user_image,
+          u.name AS user_name,
+
+          r.likes_count,
+
+          EXISTS (
+            SELECT 1
+            FROM comment_likes cl
+            WHERE cl.comment_id = r.id
+            ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
+          ) AS is_liked,
+
+          COUNT(*) OVER ()::integer AS sibling_count
+
+        FROM comments r
+
+        JOIN "user" u
+          ON u.id = r.user_id
+
+        WHERE r.post_id = ${postId}::uuid
+
+          AND r.parent_id = ${parentId}::uuid
+
+          AND r.is_deleted = FALSE
+
+          ${replyBlockFilter}
+
+          ${replyHiddenFilter}
+
+          ${replyCursorCondition}
+
+        ORDER BY
+          r.created_at DESC,
+          r.id DESC
+
+        LIMIT ${REPLIES_PAGE_SIZE + 1}
+      `);
+
+      // ───────────────────────────────────────────────────────
+      // DETERMINE REPLY PAGINATION
+      // ───────────────────────────────────────────────────────
+
+      const hasMore = repliesResult.rows.length > REPLIES_PAGE_SIZE;
+
+      const replyRows = repliesResult.rows.slice(0, REPLIES_PAGE_SIZE) as any[];
+
+      // ───────────────────────────────────────────────────────
+      // BUILD REPLY NODES
+      // ───────────────────────────────────────────────────────
+
+      const replies = replyRows.map((row) => buildCommentNode(row));
+
+      // ───────────────────────────────────────────────────────
+      // BUILD NEXT REPLY CURSOR
+      // ───────────────────────────────────────────────────────
+
+      const nextCursor = buildReplyCursor(replies, hasMore);
+
+      // ───────────────────────────────────────────────────────
+      // BUILD REPLY RESPONSE
+      // ───────────────────────────────────────────────────────
+
+      const response = {
+        parentId,
+        replies,
+        nextCursor,
+        hasMore,
+      };
+
+      // ───────────────────────────────────────────────────────
+      // REDIS CACHE SET
+      // ───────────────────────────────────────────────────────
+
+      if (redis) {
+        try {
+          await redis.set(cacheKey, JSON.stringify(response), {
+            EX: CACHE_TTL,
+          });
+        } catch (err) {
+          console.error("REDIS SET ERROR:", err);
+        }
+      }
+
+      return res.json(response);
+    }
+
     // ─────────────────────────────────────────────────────────
     // ROOT COMMENT CURSOR CONDITION
     // ─────────────────────────────────────────────────────────
@@ -413,6 +726,22 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
           )
         `
       : sql``;
+
+    // ─────────────────────────────────────────────────────────
+    // REDIS CACHE GET
+    // ─────────────────────────────────────────────────────────
+
+    if (redis) {
+      try {
+        const cached = await redis.get(cacheKey);
+
+        if (cached) {
+          return res.json(JSON.parse(cached));
+        }
+      } catch (err) {
+        console.error("REDIS GET ERROR:", err);
+      }
+    }
 
     // ─────────────────────────────────────────────────────────
     // FETCH ROOT COMMENTS
@@ -513,49 +842,6 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       rootIds.map((id) => sql`${id}::uuid`),
       sql`, `,
     );
-
-    // ─────────────────────────────────────────────────────────
-    // RECURSIVE REPLY FILTERS
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * These filters apply to:
-     *
-     * - Direct replies.
-     * - Grandchildren.
-     * - Great-grandchildren.
-     * - All subsequent reply levels.
-     *
-     * A hidden reply is excluded from the response entirely.
-     * Its descendants are consequently not exposed through
-     * that hidden reply.
-     *
-     * Soft-deleted replies are also excluded entirely.
-     * Their descendants are consequently not exposed through
-     * the deleted reply.
-     */
-
-    const replyBlockFilter = userId
-      ? sql`
-          AND NOT EXISTS (
-            SELECT 1
-            FROM user_blocks ub
-            WHERE ub.blocker_id = ${userId}
-              AND ub.blocked_id = r.user_id
-          )
-        `
-      : sql``;
-
-    const replyHiddenFilter = userId
-      ? sql`
-          AND NOT EXISTS (
-            SELECT 1
-            FROM user_hidden_comments uh
-            WHERE uh.user_id = ${userId}
-              AND uh.comment_id = r.id
-          )
-        `
-      : sql``;
 
     // ─────────────────────────────────────────────────────────
     // RECURSIVELY FETCH ALL REPLY LEVELS
