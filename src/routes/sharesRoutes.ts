@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { shareVersionOne } from "../controllers/sharesController";
 
 const router = Router();
 
-router.post("/", authUser, shareVersionOne);
+router.post("/", requireAuth, shareVersionOne);
 
 export default router;

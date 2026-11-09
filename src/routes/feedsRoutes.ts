@@ -1,11 +1,11 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { forYouFeedVerisonOne } from "../controllers/feeds/feedsController";
 import { followingVersionOne } from "../controllers/feeds/followingController";
 import { trendingFeedVersionOne } from "../controllers/feeds/trendingsController";
 
 const router = Router();
-router.use(authUser);
+router.use(requireAuth);
 
 router.get("/", forYouFeedVerisonOne);
 router.get("/following", followingVersionOne);

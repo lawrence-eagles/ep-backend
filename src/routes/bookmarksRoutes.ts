@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import {
   bookmarkVersionOne,
   unbookmarkVersionOne,
@@ -8,7 +8,7 @@ import { bookmarksFeedVersionOne } from "../controllers/feeds/bookmarksFeedContr
 
 const router = Router();
 
-router.use(authUser);
+router.use(requireAuth);
 
 router.get("/", bookmarksFeedVersionOne);
 router.post("/", bookmarkVersionOne);

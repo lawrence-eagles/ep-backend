@@ -4,7 +4,9 @@ import { sql } from "drizzle-orm";
 import { getRedis } from "../../lib/redis";
 import { buildCommentsKey } from "../../utils/cache";
 
-// ── Config ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// CONFIGURATION
+// ─────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 10;
 const REPLIES_PAGE_SIZE = 5;
@@ -12,14 +14,39 @@ const CACHE_TTL = 60;
 const RATE_LIMIT_WINDOW = 60;
 const RATE_LIMIT_MAX = 60;
 
-// ── Regex ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// UUID VALIDATION
+// ─────────────────────────────────────────────────────────────
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-// =========================
-// 🔥 SAFE REDIS HELPER
-// =========================
+// ─────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────
+
+interface Cursor {
+  created_at: string;
+  id: string;
+}
+
+interface CommentNode {
+  id: string;
+  created_at: string;
+  content: string;
+  user_id: string;
+  userName: string;
+  userImage: string | null;
+  likesCount: number | string;
+  isLiked: boolean;
+  replies: CommentNode[];
+  repliesNextCursor: string | null;
+  repliesHasMore: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────
+// SAFE REDIS HELPER
+// ─────────────────────────────────────────────────────────────
 
 async function getRedisSafe() {
   try {
@@ -30,13 +57,14 @@ async function getRedisSafe() {
   }
 }
 
-// =========================
-// 🚦 RATE LIMIT
-// =========================
+// ─────────────────────────────────────────────────────────────
+// RATE LIMITING
+// ─────────────────────────────────────────────────────────────
 
 async function rateLimit(userId: string, keySuffix: string) {
   const redis = await getRedisSafe();
 
+  // Fail open if Redis is unavailable.
   if (!redis) return;
 
   const key = `rate:${keySuffix}:${userId}`;
@@ -59,29 +87,24 @@ async function rateLimit(userId: string, keySuffix: string) {
   }
 }
 
-// =========================
-// Cursor Types
-// =========================
-
-interface Cursor {
-  created_at: string;
-  id: string;
-}
-
-// =========================
-// Encode Cursor
-// =========================
+// ─────────────────────────────────────────────────────────────
+// CURSOR ENCODING
+// ─────────────────────────────────────────────────────────────
 
 function encodeCursor(data: Cursor): string {
   return Buffer.from(JSON.stringify(data)).toString("base64url");
 }
 
-// =========================
-// Decode Cursor
-// =========================
+// ─────────────────────────────────────────────────────────────
+// CURSOR DECODING
+// ─────────────────────────────────────────────────────────────
 
 function decodeCursor(cursor: string): Cursor {
   try {
+    if (cursor.length > 1000) {
+      throw new Error();
+    }
+
     const raw = Buffer.from(cursor, "base64url").toString("utf-8");
 
     if (raw.length > 500) {
@@ -119,62 +142,123 @@ function decodeCursor(cursor: string): Cursor {
   }
 }
 
-// =========================
-// 🔒 BLOCK LIST CACHE SIGNATURE
-// =========================
+// ─────────────────────────────────────────────────────────────
+// PERSONALIZATION CACHE SIGNATURE
+// ─────────────────────────────────────────────────────────────
 
 /**
- * Generates a deterministic signature of the authenticated
- * user's current blocked-user list.
+ * Generates a deterministic signature using:
  *
- * This makes comment cache entries dependent on the actual
- * block relationships stored in PostgreSQL.
+ * 1. Users blocked by the authenticated user.
+ * 2. Comments and replies hidden by the authenticated user.
  *
- * When a user blocks or unblocks someone, the signature
- * changes automatically.
+ * This ensures that changes to either relationship
+ * automatically produce a different Redis cache key.
  *
- * No Redis SCAN or cache deletion is required.
+ * No Redis SCAN or explicit cache invalidation is required.
  */
-async function getBlockSignature(userId: string): Promise<string> {
+
+async function getPersonalizationSignature(userId: string): Promise<string> {
   const result = await db.execute(sql`
     SELECT
       md5(
         COALESCE(
-          jsonb_agg(
-            blocked_id ORDER BY blocked_id
-          )::text,
+          (
+            SELECT jsonb_agg(
+              ub.blocked_id ORDER BY ub.blocked_id
+            )::text
+            FROM user_blocks ub
+            WHERE ub.blocker_id = ${userId}
+          ),
+          '[]'
+        )
+        ||
+        ':'
+        ||
+        COALESCE(
+          (
+            SELECT jsonb_agg(
+              uh.comment_id ORDER BY uh.comment_id
+            )::text
+            FROM user_hidden_comments uh
+            WHERE uh.user_id = ${userId}
+          ),
           '[]'
         )
       ) AS signature
-    FROM user_blocks
-    WHERE blocker_id = ${userId}
   `);
 
   const signature = result.rows[0]?.signature;
 
   if (typeof signature !== "string") {
-    throw new Error("Failed to generate block cache signature");
+    throw new Error("Failed to generate personalization cache signature");
   }
 
   return signature;
 }
 
-// =========================
-// 🚀 CONTROLLER
-// =========================
+// ─────────────────────────────────────────────────────────────
+// BUILD COMMENT NODE
+// ─────────────────────────────────────────────────────────────
+
+function buildCommentNode(row: any): CommentNode {
+  return {
+    id: row.id,
+    created_at: row.created_at,
+    content: row.content,
+    user_id: row.user_id,
+    userName: row.user_name,
+    userImage: row.user_image,
+    likesCount: row.likes_count,
+    isLiked: row.is_liked,
+
+    replies: [],
+
+    repliesNextCursor: null,
+    repliesHasMore: false,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD REPLY PAGINATION CURSOR
+// ─────────────────────────────────────────────────────────────
+
+function buildReplyCursor(
+  replies: CommentNode[],
+  hasMore: boolean,
+): string | null {
+  if (!hasMore || replies.length === 0) {
+    return null;
+  }
+
+  const lastReply = replies[replies.length - 1];
+
+  return encodeCursor({
+    created_at: new Date(lastReply.created_at).toISOString(),
+    id: lastReply.id,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// FETCH COMMENTS CONTROLLER
+// GET /api/v1/posts/:postId/comments
+// ─────────────────────────────────────────────────────────────
 
 export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
   try {
     const redis = await getRedisSafe();
 
-    // Authenticated user, or null for anonymous users.
+    // ─────────────────────────────────────────────────────────
+    // AUTHENTICATION
+    // ─────────────────────────────────────────────────────────
+
     const userId = req.user?.id ?? null;
 
     await rateLimit(userId ?? `ip:${req.ip}`, "fetch_comments");
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // VALIDATE POST ID
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
     let { postId } = req.params;
 
@@ -188,9 +272,9 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       });
     }
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // VALIDATE CURSOR
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
     const cursorParam = req.query.cursor;
 
@@ -214,19 +298,47 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       }
     }
 
-    // =========================
-    // 🔒 BLOCK-AWARE CACHE KEY
-    // =========================
+    // ─────────────────────────────────────────────────────────
+    // ACTIVE COMMENT RESTRICTION CHECK
+    // ─────────────────────────────────────────────────────────
+
+    // This check must happen before the Redis cache lookup.
+    // Otherwise, a previously cached comment response could allow
+    // a restricted user to continue viewing comments.
+    if (userId) {
+      const commentBanResult = await db.execute<{ user_id: string }>(sql`
+        SELECT user_id
+        FROM user_comment_bans
+        WHERE user_id = ${userId}
+          AND (
+            expires_at IS NULL
+            OR expires_at > NOW()
+          )
+        LIMIT 1
+      `);
+
+      if (commentBanResult.rows.length > 0) {
+        // Do not read from or write to the comment cache for
+        // users with an active comment restriction.
+        return res.json({
+          comments: [],
+          nextCursor: null,
+          hasMore: false,
+        });
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // PERSONALIZED CACHE KEY
+    // ─────────────────────────────────────────────────────────
 
     let cacheUserId: string | null = userId;
 
     if (userId) {
-      const blockSignature = await getBlockSignature(userId);
+      const personalizationSignature =
+        await getPersonalizationSignature(userId);
 
-      // The original cache builder remains unchanged.
-      // We pass a user-specific identity that includes
-      // the current block-list signature.
-      cacheUserId = `${userId}:blocks:${blockSignature}`;
+      cacheUserId = `${userId}:personalization:${personalizationSignature}`;
     }
 
     const cacheKey = await buildCommentsKey(
@@ -235,9 +347,9 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       cacheUserId,
     );
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // REDIS CACHE GET
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
     if (redis) {
       try {
@@ -251,15 +363,20 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       }
     }
 
-    // =========================
-    // 🔒 BLOCK FILTER CONDITIONS
-    // =========================
+    // ─────────────────────────────────────────────────────────
+    // BLOCK FILTER CONDITIONS
+    // ─────────────────────────────────────────────────────────
 
     /**
-     * Only authenticated users receive personalized
-     * block filtering.
+     * Anonymous users:
+     * - See public comments.
      *
-     * Anonymous users continue seeing public comments.
+     * Authenticated users:
+     * - Do not see comments from users they blocked.
+     * - Do not see comments from users who blocked them
+     *   unless your existing block policy specifies otherwise.
+     *
+     * The filtering is applied at every reply depth.
      */
 
     const rootBlockFilter = userId
@@ -273,40 +390,47 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         `
       : sql``;
 
-    const replyBlockFilter = userId
+    const rootHiddenFilter = userId
       ? sql`
           AND NOT EXISTS (
             SELECT 1
-            FROM user_blocks ub
-            WHERE ub.blocker_id = ${userId}
-              AND ub.blocked_id = r.user_id
+            FROM user_hidden_comments uh
+            WHERE uh.user_id = ${userId}
+              AND uh.comment_id = c.id
           )
         `
       : sql``;
 
-    // =========================
-    // FETCH ROOT COMMENTS (DESC)
-    // =========================
-
-    /**
-     * Filtering happens inside PostgreSQL BEFORE:
-     *
-     * - ORDER BY
-     * - LIMIT
-     * - Pagination
-     *
-     * Consequently, blocked comments do not consume
-     * the user's 10-comment page limit.
-     */
+    // ─────────────────────────────────────────────────────────
+    // ROOT COMMENT CURSOR CONDITION
+    // ─────────────────────────────────────────────────────────
 
     const cursorCondition = decodedCursor
       ? sql`
           AND (c.created_at, c.id) < (
-            ${decodedCursor.created_at}::timestamp,
+            ${decodedCursor.created_at}::timestamptz,
             ${decodedCursor.id}::uuid
           )
         `
       : sql``;
+
+    // ─────────────────────────────────────────────────────────
+    // FETCH ROOT COMMENTS
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Filtering occurs inside PostgreSQL before:
+     *
+     * - Soft-deleted comment filtering.
+     * - User block filtering.
+     * - User hidden-comment filtering.
+     * - ORDER BY.
+     * - LIMIT.
+     * - Pagination.
+     *
+     * Deleted, hidden, and blocked comments therefore do not
+     * consume the user's 10-comment page limit.
+     */
 
     const commentsQuery = sql`
       SELECT
@@ -314,8 +438,10 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         c.created_at,
         c.content,
         c.user_id,
+
         u.image AS user_image,
         u.name AS user_name,
+
         c.likes_count,
 
         EXISTS (
@@ -332,12 +458,17 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
 
       WHERE c.post_id = ${postId}
         AND c.parent_id IS NULL
+        AND c.is_deleted = FALSE
 
         ${rootBlockFilter}
 
+        ${rootHiddenFilter}
+
         ${cursorCondition}
 
-      ORDER BY c.created_at DESC, c.id DESC
+      ORDER BY
+        c.created_at DESC,
+        c.id DESC
 
       LIMIT ${PAGE_SIZE + 1}
     `;
@@ -346,13 +477,13 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
 
     const hasMore = result.rows.length > PAGE_SIZE;
 
-    const comments = result.rows.slice(0, PAGE_SIZE) as any[];
+    const rootComments = result.rows.slice(0, PAGE_SIZE) as any[];
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // HANDLE EMPTY COMMENTS
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
-    if (comments.length === 0) {
+    if (rootComments.length === 0) {
       const emptyResponse = {
         comments: [],
         nextCursor: null,
@@ -372,163 +503,417 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       return res.json(emptyResponse);
     }
 
-    const ids = comments.map((c) => c.id);
+    // ─────────────────────────────────────────────────────────
+    // ROOT COMMENT IDS
+    // ─────────────────────────────────────────────────────────
 
-    // =========================
-    // FETCH REPLIES (DESC)
-    // =========================
+    const rootIds = rootComments.map((comment) => comment.id);
+
+    const rootIdsSQL = sql.join(
+      rootIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    );
+
+    // ─────────────────────────────────────────────────────────
+    // RECURSIVE REPLY FILTERS
+    // ─────────────────────────────────────────────────────────
 
     /**
-     * Replies are filtered inside the LATERAL query
-     * BEFORE LIMIT.
+     * These filters apply to:
      *
-     * This prevents blocked users' replies from consuming
-     * the 5-reply pagination limit.
+     * - Direct replies.
+     * - Grandchildren.
+     * - Great-grandchildren.
+     * - All subsequent reply levels.
      *
-     * The existing response continues returning direct
-     * replies under each root comment.
+     * A hidden reply is excluded from the response entirely.
+     * Its descendants are consequently not exposed through
+     * that hidden reply.
+     *
+     * Soft-deleted replies are also excluded entirely.
+     * Their descendants are consequently not exposed through
+     * the deleted reply.
+     */
+
+    const replyBlockFilter = userId
+      ? sql`
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE ub.blocker_id = ${userId}
+              AND ub.blocked_id = r.user_id
+          )
+        `
+      : sql``;
+
+    const replyHiddenFilter = userId
+      ? sql`
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_hidden_comments uh
+            WHERE uh.user_id = ${userId}
+              AND uh.comment_id = r.id
+          )
+        `
+      : sql``;
+
+    // ─────────────────────────────────────────────────────────
+    // RECURSIVELY FETCH ALL REPLY LEVELS
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Recursive comment retrieval.
+     *
+     * The first recursive level retrieves direct replies.
+     * Subsequent levels retrieve replies to those replies.
+     *
+     * Pagination:
+     * - Maximum 5 visible replies per parent.
+     * - An additional reply is fetched to determine hasMore.
+     * - Each parent receives independent pagination metadata.
+     *
+     * Cycle protection:
+     * - Tracks visited UUIDs using a PostgreSQL UUID array.
+     * - Prevents a comment from appearing in its own ancestry.
+     *
+     * Soft-deleted, hidden, and blocked replies are filtered
+     * before LIMIT.
      */
 
     const repliesResult = await db.execute(sql`
-      SELECT
-        c.id AS parent_id,
+      WITH RECURSIVE comment_tree AS (
 
-        r.id AS reply_id,
-        r.created_at AS reply_created_at,
-        r.content AS reply_content,
-        r.user_id AS reply_user_id,
-        r.user_image AS reply_user_image,
-        r.user_name AS reply_user_name,
-        r.likes_count AS reply_likes_count,
+        -- ───────────────────────────────────────────────────
+        -- FIRST LEVEL: DIRECT REPLIES TO ROOT COMMENTS
+        -- ───────────────────────────────────────────────────
 
-        EXISTS (
-          SELECT 1
-          FROM comment_likes cl
-          WHERE cl.comment_id = r.id
-          ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
-        ) AS reply_is_liked
-
-      FROM comments c
-
-      LEFT JOIN LATERAL (
         SELECT
-          r.id,
-          r.created_at,
-          r.content,
-          r.user_id,
-          u.image AS user_image,
-          u.name AS user_name,
-          r.likes_count
+          root.id AS root_id,
 
-        FROM comments r
+          child.id,
+          child.parent_id,
+          child.created_at,
+          child.content,
+          child.user_id,
 
-        JOIN "user" u
-          ON u.id = r.user_id
+          child.user_image,
+          child.user_name,
 
-        WHERE r.parent_id = c.id
+          child.likes_count,
+          child.is_liked,
 
-          ${replyBlockFilter}
+          1::integer AS depth,
 
-        ORDER BY r.created_at DESC, r.id DESC
+          child.sibling_position,
+          child.sibling_count,
 
-        LIMIT ${REPLIES_PAGE_SIZE + 1}
+          ARRAY[root.id, child.id]::uuid[] AS path
 
-      ) r ON TRUE
+        FROM comments root
 
-      WHERE c.id IN (
-        ${sql.join(
-          ids.map((id) => sql`${id}`),
-          sql`, `,
-        )}
+        CROSS JOIN LATERAL (
+
+          SELECT
+            r.id,
+            r.parent_id,
+            r.created_at,
+            r.content,
+            r.user_id,
+
+            u.image AS user_image,
+            u.name AS user_name,
+
+            r.likes_count,
+
+            EXISTS (
+              SELECT 1
+              FROM comment_likes cl
+              WHERE cl.comment_id = r.id
+              ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
+            ) AS is_liked,
+
+            ROW_NUMBER() OVER (
+              ORDER BY
+                r.created_at DESC,
+                r.id DESC
+            )::integer AS sibling_position,
+
+            COUNT(*) OVER ()::integer AS sibling_count
+
+          FROM comments r
+
+          JOIN "user" u
+            ON u.id = r.user_id
+
+          WHERE r.parent_id = root.id
+            AND r.is_deleted = FALSE
+
+            ${replyBlockFilter}
+
+            ${replyHiddenFilter}
+
+          ORDER BY
+            r.created_at DESC,
+            r.id DESC
+
+          LIMIT ${REPLIES_PAGE_SIZE + 1}
+
+        ) child
+
+        WHERE root.id IN (${rootIdsSQL})
+
+        UNION ALL
+
+        -- ───────────────────────────────────────────────────
+        -- RECURSIVE LEVEL: REPLIES TO REPLIES
+        -- ───────────────────────────────────────────────────
+
+        SELECT
+          tree.root_id,
+
+          child.id,
+          child.parent_id,
+          child.created_at,
+          child.content,
+          child.user_id,
+
+          child.user_image,
+          child.user_name,
+
+          child.likes_count,
+          child.is_liked,
+
+          tree.depth + 1 AS depth,
+
+          child.sibling_position,
+          child.sibling_count,
+
+          tree.path || child.id AS path
+
+        FROM comment_tree tree
+
+        CROSS JOIN LATERAL (
+
+          SELECT
+            r.id,
+            r.parent_id,
+            r.created_at,
+            r.content,
+            r.user_id,
+
+            u.image AS user_image,
+            u.name AS user_name,
+
+            r.likes_count,
+
+            EXISTS (
+              SELECT 1
+              FROM comment_likes cl
+              WHERE cl.comment_id = r.id
+              ${userId ? sql`AND cl.user_id = ${userId}` : sql`AND FALSE`}
+            ) AS is_liked,
+
+            ROW_NUMBER() OVER (
+              ORDER BY
+                r.created_at DESC,
+                r.id DESC
+            )::integer AS sibling_position,
+
+            COUNT(*) OVER ()::integer AS sibling_count
+
+          FROM comments r
+
+          JOIN "user" u
+            ON u.id = r.user_id
+
+          WHERE r.parent_id = tree.id
+            AND r.is_deleted = FALSE
+
+            ${replyBlockFilter}
+
+            ${replyHiddenFilter}
+
+            -- Prevent circular comment relationships.
+            AND NOT (r.id = ANY(tree.path))
+
+          ORDER BY
+            r.created_at DESC,
+            r.id DESC
+
+          LIMIT ${REPLIES_PAGE_SIZE + 1}
+
+        ) child
+
+        -- Only the first 5 visible replies of each parent
+        -- are expanded to retrieve their descendants.
+        WHERE tree.sibling_position <= ${REPLIES_PAGE_SIZE}
       )
+
+      SELECT
+        root_id,
+
+        id,
+        parent_id,
+        created_at,
+        content,
+        user_id,
+
+        user_image,
+        user_name,
+
+        likes_count,
+        is_liked,
+
+        depth,
+        sibling_position,
+        sibling_count
+
+      FROM comment_tree
+
+      -- Do not return the sixth reply.
+      -- It is used only to determine whether more exist.
+      WHERE sibling_position <= ${REPLIES_PAGE_SIZE}
+
+      ORDER BY
+        depth ASC,
+        parent_id,
+        sibling_position ASC
     `);
 
-    // =========================
-    // BUILD REPLY MAP
-    // =========================
+    // ─────────────────────────────────────────────────────────
+    // BUILD ROOT COMMENT MAP
+    // ─────────────────────────────────────────────────────────
 
-    const replyMap = new Map<
+    const rootMap = new Map<string, CommentNode>();
+
+    for (const row of rootComments) {
+      rootMap.set(row.id, buildCommentNode(row));
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // BUILD REPLY NODE MAP
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Every retrieved reply is first converted into a node.
+     *
+     * This allows us to attach grandchildren and deeper
+     * descendants without depending on SQL row ordering.
+     */
+
+    const replyNodeMap = new Map<string, CommentNode>();
+
+    // Keep the parent pagination information separately.
+    const replyPaginationMap = new Map<
       string,
       {
-        replies: any[];
         hasMore: boolean;
       }
     >();
 
-    for (const row of repliesResult.rows as any[]) {
-      const parentId = row.parent_id;
+    const replyRows = repliesResult.rows as any[];
 
-      if (!replyMap.has(parentId)) {
-        replyMap.set(parentId, {
-          replies: [],
-          hasMore: false,
-        });
-      }
+    for (const row of replyRows) {
+      const node = buildCommentNode(row);
 
-      if (!row.reply_id) {
+      replyNodeMap.set(row.id, node);
+
+      replyPaginationMap.set(row.id, {
+        hasMore: Number(row.sibling_count) > REPLIES_PAGE_SIZE,
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // ATTACH REPLIES TO THEIR PARENTS
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * First attach direct replies to root comments.
+     *
+     * Then attach grandchildren and deeper descendants
+     * to their respective parent reply nodes.
+     *
+     * This creates a properly nested comment tree.
+     */
+
+    for (const row of replyRows) {
+      const node = replyNodeMap.get(row.id);
+
+      if (!node) {
         continue;
       }
 
-      const data = replyMap.get(parentId)!;
+      const parentId = row.parent_id;
 
-      data.replies.push({
-        id: row.reply_id,
-        created_at: row.reply_created_at,
-        content: row.reply_content,
-        user_id: row.reply_user_id,
-        userName: row.reply_user_name,
-        userImage: row.reply_user_image,
-        likesCount: row.reply_likes_count,
-        isLiked: row.reply_is_liked,
-      });
+      // Parent is another reply.
+      const parentReply = replyNodeMap.get(parentId);
 
-      if (data.replies.length > REPLIES_PAGE_SIZE) {
-        data.hasMore = true;
-        data.replies.pop();
+      if (parentReply) {
+        parentReply.replies.push(node);
+        continue;
+      }
+
+      // Parent is a root comment.
+      const rootComment = rootMap.get(parentId);
+
+      if (rootComment) {
+        rootComment.replies.push(node);
       }
     }
 
-    // =========================
-    // BUILD RESPONSE
-    // =========================
+    // ─────────────────────────────────────────────────────────
+    // APPLY REPLY PAGINATION METADATA
+    // ─────────────────────────────────────────────────────────
 
-    const enriched = comments.map((c) => {
-      const r = replyMap.get(c.id);
+    /**
+     * Every reply node receives its own pagination cursor
+     * and hasMore value.
+     *
+     * The same applies to direct replies under root comments.
+     */
 
-      const replies = r?.replies ?? [];
+    function applyReplyPagination(parent: CommentNode): void {
+      const pagination = replyPaginationMap.get(parent.id);
 
-      return {
-        id: c.id,
-        created_at: c.created_at,
-        content: c.content,
-        user_id: c.user_id,
-        userName: c.user_name,
-        userImage: c.user_image,
-        likesCount: c.likes_count,
-        isLiked: c.is_liked,
+      const hasMore = pagination?.hasMore ?? false;
 
-        replies,
+      parent.repliesHasMore = hasMore;
 
-        repliesNextCursor:
-          r?.hasMore && replies.length > 0
-            ? encodeCursor({
-                created_at: new Date(
-                  replies[replies.length - 1].created_at,
-                ).toISOString(),
+      parent.repliesNextCursor = buildReplyCursor(parent.replies, hasMore);
+    }
 
-                id: replies[replies.length - 1].id,
-              })
-            : null,
+    // Apply pagination metadata to all retrieved replies.
+    for (const node of replyNodeMap.values()) {
+      applyReplyPagination(node);
+    }
 
-        repliesHasMore: r?.hasMore ?? false,
-      };
+    // ─────────────────────────────────────────────────────────
+    // BUILD FINAL COMMENT RESPONSE
+    // ─────────────────────────────────────────────────────────
+
+    const enriched = rootComments.map((comment) => {
+      const rootNode = rootMap.get(comment.id)!;
+
+      const replies = rootNode.replies;
+
+      const rootReplyHasMore = replyRows.some(
+        (row) =>
+          row.parent_id === comment.id &&
+          Number(row.sibling_count) > REPLIES_PAGE_SIZE,
+      );
+
+      rootNode.repliesHasMore = rootReplyHasMore;
+
+      rootNode.repliesNextCursor = buildReplyCursor(replies, rootReplyHasMore);
+
+      return rootNode;
     });
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // ROOT COMMENT NEXT CURSOR
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
-    const last = comments[comments.length - 1];
+    const last = rootComments[rootComments.length - 1];
 
     const nextCursor = hasMore
       ? encodeCursor({
@@ -537,9 +922,9 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
         })
       : null;
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // FINAL RESPONSE
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
     const response = {
       comments: enriched,
@@ -547,9 +932,9 @@ export const fetchCommentsVersionOne = async (req: Request, res: Response) => {
       hasMore,
     };
 
-    // =========================
+    // ─────────────────────────────────────────────────────────
     // REDIS CACHE SET
-    // =========================
+    // ─────────────────────────────────────────────────────────
 
     if (redis) {
       try {

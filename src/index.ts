@@ -26,6 +26,9 @@ import singlePostRoutes from "./routes/singlePostRoutes";
 import imageKitRoutes from "./routes/imageKitRoutes";
 import userAvatarRouter from "./routes/userAvatarRoutes";
 import userBlockRoutes from "./routes/userBlock";
+import reportingRoutes from "./routes/reportingRoutes";
+import commentVisibilityRoutes from "./routes/commentVisibilityRoutes";
+import moderationRoutes from "./routes/moderationRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -101,6 +104,13 @@ app.use("/api/v1/follows", followsRoutes);
 app.use("/api/v1/likes", likesRoutes);
 app.use("/api/v1/comment-likes", commentLikesRoutes);
 app.use("/api/v1/shares", sharesRoutes);
+
+app.use("/api/v1/reports", reportingRoutes);
+app.use("/api/v1/moderation", moderationRoutes);
+// Register this before your existing commentsRoutes.
+app.use("/api/v1/comments-visibility", commentVisibilityRoutes);
+
+// existing comment route
 app.use("/api/v1/comments", commentsRoutes);
 app.use("/api/v1/single-post/:slug", singlePostRoutes);
 

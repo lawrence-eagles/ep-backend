@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { trackConversion } from "../services/trackConversion";
 
 const router = Router();
@@ -57,7 +57,7 @@ function getCookieOptions(req: Request) {
  * - Returning user open
  * - Prevents duplicate tracking
  */
-router.post("/", authUser, async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     // =========================
     // 1. AUTH VALIDATION

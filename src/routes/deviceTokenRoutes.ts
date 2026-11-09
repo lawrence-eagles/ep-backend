@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { registerDeviceToken } from "../controllers/deviceTokenController";
 
 const router = Router();
 
-router.post("/register", authUser, registerDeviceToken);
+router.post("/register", requireAuth, registerDeviceToken);
 
 export default router;

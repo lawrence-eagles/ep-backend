@@ -1,5 +1,4 @@
 import type { Request, Response, NextFunction } from "express";
-
 import {
   blockUser,
   unblockUser,
@@ -7,7 +6,6 @@ import {
   getBlockStatus,
   UserBlockError,
 } from "../services/userBlock";
-
 import { userBlockParamsSchema } from "../validators/userBlock";
 
 /**

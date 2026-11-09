@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { authUser } from "../middleware/authUser";
+import { requireAuth } from "../middleware/requireAuth";
 import { shareAppsControllerVersionOne } from "../controllers/shareAppsController";
 
 const router = Router();
 
-router.post("/", authUser, shareAppsControllerVersionOne);
+router.post("/", requireAuth, shareAppsControllerVersionOne);
 
 export default router;
