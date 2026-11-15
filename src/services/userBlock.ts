@@ -81,14 +81,22 @@ export async function unblockUser(blockerId: string, blockedId: string) {
 
 /**
  * Retrieve users blocked by the authenticated user.
+ *
+ * Returns the blocked user's ID, block timestamp, name, and profile image.
+ *
+ * @param blockerId - ID of the authenticated user who blocked the users.
+ * @param limit - Maximum number of blocked users to retrieve.
  */
 export async function getBlockedUsers(blockerId: string, limit = 100) {
   return db
     .select({
       userId: userBlocks.blockedId,
       blockedAt: userBlocks.createdAt,
+      name: user.name,
+      image: user.image,
     })
     .from(userBlocks)
+    .innerJoin(user, eq(userBlocks.blockedId, user.id))
     .where(eq(userBlocks.blockerId, blockerId))
     .orderBy(desc(userBlocks.createdAt))
     .limit(limit);
