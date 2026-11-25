@@ -99,7 +99,9 @@ export const verification = pgTable(
   },
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
+// ---------------------------------
 // BETTER AUTH GENERATED TABLES END.
+// ---------------------------------
 
 // -------------------------------
 // Ban users table
@@ -181,6 +183,141 @@ export const uuidV7PrimaryKey = () =>
     .primaryKey()
     .notNull()
     .default(sql`uuidv7()`);
+
+// ---------------------------------------------
+// Email Subscription Table
+// ---------------------------------------------
+// src/db/schema.ts
+
+export const waitlistStatusEnum = pgEnum("waitlist_status", [
+  "pending",
+  "confirmed",
+  "unsubscribed",
+  "bounced",
+]);
+
+export const waitlistEmailTypeEnum = pgEnum("waitlist_email_type", [
+  "verification",
+  "welcome",
+  "launch",
+]);
+
+export const waitlistOutboxStatusEnum = pgEnum("waitlist_outbox_status", [
+  "pending",
+  "processing",
+  "sent",
+  "failed",
+]);
+
+export const waitlistSubscribers = pgTable(
+  "waitlist_subscribers",
+  {
+    id: uuidV7PrimaryKey(),
+
+    // Always lowercase and trimmed before insertion.
+    email: text("email").notNull(),
+
+    status: waitlistStatusEnum("status").notNull().default("pending"),
+
+    verificationTokenHash: text("verification_token_hash"),
+    verificationTokenExpiresAt: timestamp("verification_token_expires_at", {
+      withTimezone: true,
+    }),
+
+    unsubscribeTokenHash: text("unsubscribe_token_hash"),
+
+    verificationSentAt: timestamp("verification_sent_at", {
+      withTimezone: true,
+    }),
+
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    unsubscribedAt: timestamp("unsubscribed_at", {
+      withTimezone: true,
+    }),
+
+    source: text("source"),
+    consentAt: timestamp("consent_at", {
+      withTimezone: true,
+    }).notNull(),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex("waitlist_subscribers_email_unique").on(table.email),
+    index("waitlist_subscribers_status_created_idx").on(
+      table.status,
+      table.createdAt.desc(),
+    ),
+    index("waitlist_subscribers_created_idx").on(table.createdAt.desc()),
+    index("waitlist_subscribers_verification_expiry_idx").on(
+      table.verificationTokenExpiresAt,
+    ),
+    uniqueIndex("waitlist_subscribers_verification_hash_unique")
+      .on(table.verificationTokenHash)
+      .where(sql`${table.verificationTokenHash} IS NOT NULL`),
+    uniqueIndex("waitlist_subscribers_unsubscribe_hash_unique")
+      .on(table.unsubscribeTokenHash)
+      .where(sql`${table.unsubscribeTokenHash} IS NOT NULL`),
+  ],
+);
+
+export const waitlistEmailOutbox = pgTable(
+  "waitlist_email_outbox",
+  {
+    id: uuidV7PrimaryKey(),
+
+    subscriberId: uuid("subscriber_id")
+      .notNull()
+      .references(() => waitlistSubscribers.id, { onDelete: "cascade" }),
+
+    type: waitlistEmailTypeEnum("type").notNull(),
+
+    // AES-256-GCM encrypted JSON. May contain a one-time verification token.
+    payloadEncrypted: text("payload_encrypted").notNull(),
+
+    status: waitlistOutboxStatusEnum("status").notNull().default("pending"),
+
+    attempts: integer("attempts").notNull().default(0),
+
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    lockedUntil: timestamp("locked_until", {
+      withTimezone: true,
+    }),
+
+    lastError: text("last_error"),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("waitlist_outbox_pending_idx").on(table.status, table.nextAttemptAt),
+    index("waitlist_outbox_subscriber_idx").on(table.subscriberId),
+  ],
+);
+// ---------------------------------------------
+// Email Subscription Table Ends
+// ---------------------------------------------
 
 // ─────────────────────────────────────────────
 // REPORTING AND MODERATION BEGINS

@@ -34,6 +34,7 @@ const envSchema = z.object({
   R2_ACCESS_KEY_ID: z.string().min(1),
   R2_SECRET_ACCESS_KEY: z.string().min(1),
   R2_BUCKET_NAME: z.string().min(1),
+  TURNSTILE_SECRET_KEY: z.string().min(1),
   //   CLERK_PUBLISHABLE_KEY: z.string().min(1),
   //   CLERK_WEBHOOK_SECRET: z.string().optional(),
   //   POLAR_ACCESS_TOKEN: z.string().optional(),

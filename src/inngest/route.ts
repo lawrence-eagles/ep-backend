@@ -12,11 +12,13 @@ import { relayPendingUserDeletions } from "../jobs/functions/relayPendingUserDel
 import { invalidateDeletedUserCache } from "../jobs/functions/invalidateDeletedUserCache";
 import { cleanupImageKitFile } from "../jobs/functions/cleanupImageKitFile";
 import { scanImageKitCleanup } from "../jobs/functions/scanImageKitCleanup";
+import { deliverWaitlistEmails } from "../jobs/functions/waitlistEmailDelivery";
 
 export const inngestHandler = serve({
   client: inngest,
   functions: [
     fetchNews,
+    deliverWaitlistEmails,
     externalizeUserDeletion,
     flushSharesCron,
     fanoutNotifications,
