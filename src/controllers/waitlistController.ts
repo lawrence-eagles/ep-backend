@@ -17,6 +17,56 @@ import { verifyWaitlistTurnstile } from "../services/waitlist/waitlistTurnstile"
 
 const env = getEnv();
 
+/**
+ * Logs only a fixed operation name and a validated PostgreSQL SQLSTATE.
+ *
+ * Never log the error object or its message: database errors may contain
+ * bound query parameters, including subscriber email addresses.
+ */
+type WaitlistOperation =
+  | "subscribe"
+  | "resend_verification"
+  | "verify"
+  | "unsubscribe"
+  | "admin_list_subscribers"
+  | "admin_stats"
+  | "admin_export_subscribers";
+
+function getSafeDatabaseErrorCode(error: unknown): string {
+  let current: unknown = error;
+
+  // Drizzle/driver errors may expose the PostgreSQL error through `cause`.
+  // Limit traversal depth and inspect only the `code` property.
+  for (
+    let depth = 0;
+    depth < 3 && current && typeof current === "object";
+    depth++
+  ) {
+    const candidate = current as {
+      code?: unknown;
+      cause?: unknown;
+    };
+
+    if (
+      typeof candidate.code === "string" &&
+      /^[0-9A-Z]{5}$/.test(candidate.code)
+    ) {
+      return candidate.code;
+    }
+
+    current = candidate.cause;
+  }
+
+  return "unknown";
+}
+
+function logWaitlistError(operation: WaitlistOperation, error: unknown): void {
+  console.error("WAITLIST_ERROR", {
+    operation,
+    code: getSafeDatabaseErrorCode(error),
+  });
+}
+
 const ALLOWED_TURNSTILE_HOSTNAMES = new Set([
   "eaglespress.com",
   "www.eaglespress.com",
@@ -128,32 +178,17 @@ export async function subscribe(req: Request, res: Response) {
       });
     }
 
-    const result = await subscribeToWaitlist(
-      parsed.data.email,
-      parsed.data.source,
-    );
+    await subscribeToWaitlist(parsed.data.email, parsed.data.source);
 
-    if (result.result === "already_confirmed") {
-      return res.status(200).json({
-        status: "already_confirmed",
-        message: "This email address is already on the waiting list.",
-      });
-    }
-
-    if (result.result === "bounced") {
-      return res.status(400).json({
-        error:
-          "We could not deliver email to this address. Please use another address.",
-      });
-    }
-
+    // Keep the public response identical for every valid signup state.
+    // State-specific mail decisions remain inside the service.
     return res.status(202).json({
-      status: result.result,
+      status: "accepted",
       message:
         "If this address can be added, a confirmation email will be sent.",
     });
   } catch (error) {
-    console.error("WAITLIST_SUBSCRIBE_ERROR:", error);
+    logWaitlistError("subscribe", error);
 
     return res.status(500).json({
       error: "Unable to process your request right now.",
@@ -192,7 +227,7 @@ export async function resendVerification(req: Request, res: Response) {
         "If a pending subscription exists, a new verification email will be sent.",
     });
   } catch (error) {
-    console.error("WAITLIST_RESEND_ERROR:", error);
+    logWaitlistError("resend_verification", error);
 
     return res.status(500).json({
       error: "Unable to process your request right now.",
@@ -218,7 +253,7 @@ export async function verify(req: Request, res: Response) {
       ),
     );
   } catch (error) {
-    console.error("WAITLIST_VERIFY_ERROR:", error);
+    logWaitlistError("verify", error);
 
     return res.redirect(303, frontendRedirect("/waitlist/verified", "error"));
   }
@@ -247,7 +282,7 @@ export async function unsubscribe(req: Request, res: Response) {
       error: "This unsubscribe link is invalid or has already been used.",
     });
   } catch (error) {
-    console.error("WAITLIST_UNSUBSCRIBE_ERROR:", error);
+    logWaitlistError("unsubscribe", error);
 
     return res.status(500).json({
       error: "Unable to process your request right now.",
@@ -319,7 +354,10 @@ export async function adminListSubscribers(req: Request, res: Response) {
         })
         .from(waitlistSubscribers)
         .where(where)
-        .orderBy(desc(waitlistSubscribers.createdAt))
+        .orderBy(
+          desc(waitlistSubscribers.createdAt),
+          desc(waitlistSubscribers.id),
+        )
         .limit(limit)
         .offset((page - 1) * limit),
 
@@ -343,7 +381,7 @@ export async function adminListSubscribers(req: Request, res: Response) {
       },
     });
   } catch (error) {
-    console.error("WAITLIST_ADMIN_LIST_ERROR:", error);
+    logWaitlistError("admin_list_subscribers", error);
 
     return res.status(500).json({
       error: "Unable to load subscribers.",
@@ -376,7 +414,7 @@ export async function adminWaitlistStats(_req: Request, res: Response) {
 
     return res.status(200).json(stats);
   } catch (error) {
-    console.error("WAITLIST_ADMIN_STATS_ERROR:", error);
+    logWaitlistError("admin_stats", error);
 
     return res.status(500).json({
       error: "Unable to load waitlist statistics.",
@@ -446,7 +484,7 @@ export async function adminExportSubscribers(_req: Request, res: Response) {
 
     return res.status(200).send(lines.join("\r\n"));
   } catch (error) {
-    console.error("WAITLIST_ADMIN_EXPORT_ERROR:", error);
+    logWaitlistError("admin_export_subscribers", error);
 
     return res.status(500).json({
       error: "Unable to export subscribers.",

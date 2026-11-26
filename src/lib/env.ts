@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+// For Better auth Ids validation
+const userId = z.string().regex(/^[A-Za-z0-9]{32}$/);
+
+export const parseIds = (val: string) =>
+  val
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "production", "test"])
@@ -35,6 +44,16 @@ const envSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().min(1),
   R2_BUCKET_NAME: z.string().min(1),
   TURNSTILE_SECRET_KEY: z.string().min(1),
+  MODERATOR_ADMIN_USER_IDS: z
+    .string()
+    .refine(
+      (val) => parseIds(val).every((id) => userId.safeParse(id).success),
+      {
+        message:
+          "MODERATOR_ADMIN_USER_IDS must be comma-separated Better Auth user IDs",
+      },
+    )
+    .optional(),
   //   CLERK_PUBLISHABLE_KEY: z.string().min(1),
   //   CLERK_WEBHOOK_SECRET: z.string().optional(),
   //   POLAR_ACCESS_TOKEN: z.string().optional(),

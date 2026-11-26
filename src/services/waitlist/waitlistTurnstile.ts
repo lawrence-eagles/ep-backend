@@ -132,14 +132,27 @@ export async function verifyWaitlistTurnstile(
 
     // Cloudflare rejected the token.
     if (!verification.success) {
+      const errorCodes = Array.isArray(verification["error-codes"])
+        ? verification["error-codes"].filter(
+            (code): code is string => typeof code === "string",
+          )
+        : [];
+
+      // Cloudflare internal errors indicate a verification-service
+      // failure, not an invalid visitor token.
+      if (errorCodes.includes("internal-error")) {
+        return {
+          success: false,
+          reason: "verification-unavailable",
+          errorCodes,
+        };
+      }
+
+      // Actual token rejections remain invalid-token.
       return {
         success: false,
         reason: "invalid-token",
-        errorCodes: Array.isArray(verification["error-codes"])
-          ? verification["error-codes"].filter(
-              (code): code is string => typeof code === "string",
-            )
-          : [],
+        errorCodes,
       };
     }
 

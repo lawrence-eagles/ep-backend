@@ -209,12 +209,22 @@ export const deliverWaitlistEmails: InngestFunction.Any =
                 ? verificationEmail(payload.token)
                 : welcomeEmail(payload.token);
 
-            const { error } = await resend.emails.send({
-              from: `Eaglespress <noreply@${env.DOMAIN}>`,
-              to: payload.email,
-              subject: emailContent.subject,
-              html: emailContent.html,
-            });
+            // Stable idempotency key:
+            // The same outbox item always uses the same key.
+            // Different outbox items receive different keys.
+            const idempotencyKey = `waitlist-email/${item.id}`;
+
+            const { error } = await resend.emails.send(
+              {
+                from: `Eaglespress <noreply@${env.DOMAIN}>`,
+                to: payload.email,
+                subject: emailContent.subject,
+                html: emailContent.html,
+              },
+              {
+                idempotencyKey,
+              },
+            );
 
             if (error) {
               throw new Error(error.message);
@@ -249,9 +259,11 @@ export const deliverWaitlistEmails: InngestFunction.Any =
               })
               .where(eq(waitlistEmailOutbox.id, item.id));
 
-            if (!permanentlyFailed) {
-              throw error;
-            }
+            // The outbox now owns retry scheduling.
+            // Do not throw after successfully persisting the retry state.
+            // The next cron execution will claim this item only after
+            // nextAttemptAt has elapsed and will read its updated attempts.
+            return;
           }
         });
       }

@@ -442,6 +442,10 @@ https://console.firebase.google.com?utm_source=chatgpt.com
 ## Do not back up FCM_PRIVATE_KEY to Google Drive. Store it only in the approved deployment secret store.
 
 <!--
+Get better-auth user id: SELECT id, email FROM "user" WHERE email = 'you@example.com';
+ -->
+
+<!--
 1. create new firebase key, delete old key from pc and google drive, use new key and backup it to google drive ✅
 2. create new neon db and use connection string ✅
 3. delete drizzle folder and generate new migration. push in new pr and resolve coderabbit issues. Then run migration. ✅
@@ -490,3 +494,18 @@ The code above is my sofeDeleteCommentContoller.ts, you noted above that the fol
 
 Apply the updates as specified above to my sofeDeleteCommentContoller.ts file and return a complete production ready updated sofeDeleteCommentContoller.ts file with the changes implemented. Do not omit or skip any thing.
  -->
+
+ <!-- 
+ this error is in waitlistRoutes.ts
+ Require a user action before confirming an email address.
+
+If an email scanner opens the verification URL first, GET /verify confirms the subscriber and consumes the token. Express 5 also invokes this handler for HEAD unless an earlier HEAD route handles the path. The recipient's later click then reports an invalid link. Make GET and HEAD read-only. Keep the email link as the entry point, and confirm only after the recipient selects an action that submits a POST. (expressjs.com)
+  -->
+
+1.  waitlistController
+2.  waitlist inngest function
+3.  env
+4.  waitlistRatelimit
+5.  waitlist Routes
+6.  waitlist service
+7.  waitlist Turnstile

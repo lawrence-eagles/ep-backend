@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
 
 import { db } from "../../db";
 import { waitlistEmailOutbox, waitlistSubscribers } from "../../db/schema";
@@ -152,23 +152,83 @@ export async function resendWaitlistVerification(emailInput: string) {
     return { result: "request_received" as const };
   }
 
-  const verification = createSecureToken();
-  const now = new Date();
-
-  const expiresAt = new Date(now.getTime() + VERIFICATION_TTL_MS);
-
   const updated = await db.transaction(async (tx) => {
+    // Re-read the subscriber inside the transaction so that the
+    // token and expiry information used below are current.
+    const currentSubscriber = await tx.query.waitlistSubscribers.findFirst({
+      where: and(
+        eq(waitlistSubscribers.id, subscriber.id),
+        eq(waitlistSubscribers.status, "pending"),
+      ),
+    });
+
+    if (!currentSubscriber) {
+      return false;
+    }
+
+    const now = new Date();
+
+    const existingTokenIsValid =
+      currentSubscriber.verificationTokenHash !== null &&
+      currentSubscriber.verificationTokenExpiresAt !== null &&
+      currentSubscriber.verificationTokenExpiresAt > now;
+
+    let payloadEncrypted: string;
+
+    let verification: ReturnType<typeof createSecureToken> | null = null;
+
+    if (existingTokenIsValid) {
+      // Reuse the encrypted payload associated with the current token.
+      // This preserves the already-delivered verification link.
+      const existingOutbox = await tx.query.waitlistEmailOutbox.findFirst({
+        where: and(
+          eq(waitlistEmailOutbox.subscriberId, currentSubscriber.id),
+          eq(waitlistEmailOutbox.type, "verification"),
+        ),
+        orderBy: [desc(waitlistEmailOutbox.createdAt)],
+      });
+
+      // Never invalidate a valid token just because its original
+      // encrypted outbox payload cannot be found.
+      if (!existingOutbox) {
+        return false;
+      }
+
+      payloadEncrypted = existingOutbox.payloadEncrypted;
+    } else {
+      // The existing token has expired or is missing.
+      // A new token is now required.
+      verification = createSecureToken();
+
+      payloadEncrypted = encryptPayload({
+        email,
+        token: verification.token,
+      } satisfies EmailPayload);
+    }
+
+    // Update the resend timestamp atomically.
+    // The cooldown condition prevents concurrent requests from
+    // queueing multiple verification emails.
+    const updateValues = verification
+      ? {
+          verificationTokenHash: verification.tokenHash,
+          verificationTokenExpiresAt: new Date(
+            now.getTime() + VERIFICATION_TTL_MS,
+          ),
+          verificationSentAt: now,
+          updatedAt: now,
+        }
+      : {
+          verificationSentAt: now,
+          updatedAt: now,
+        };
+
     const [row] = await tx
       .update(waitlistSubscribers)
-      .set({
-        verificationTokenHash: verification.tokenHash,
-        verificationTokenExpiresAt: expiresAt,
-        verificationSentAt: now,
-        updatedAt: now,
-      })
+      .set(updateValues)
       .where(
         and(
-          eq(waitlistSubscribers.id, subscriber.id),
+          eq(waitlistSubscribers.id, currentSubscriber.id),
           eq(waitlistSubscribers.status, "pending"),
           or(
             isNull(waitlistSubscribers.verificationSentAt),
@@ -189,13 +249,12 @@ export async function resendWaitlistVerification(emailInput: string) {
       return false;
     }
 
+    // Queue the existing encrypted payload when the token is still
+    // valid, or the newly generated payload when it has expired.
     await tx.insert(waitlistEmailOutbox).values({
       subscriberId: row.id,
       type: "verification",
-      payloadEncrypted: encryptPayload({
-        email,
-        token: verification.token,
-      } satisfies EmailPayload),
+      payloadEncrypted,
     });
 
     return true;
@@ -211,13 +270,13 @@ export async function resendWaitlistVerification(emailInput: string) {
 
 export async function verifyWaitlistEmail(token: string) {
   const tokenHash = hashToken(token);
-  const now = new Date();
+  const lookupNow = new Date();
 
   const subscriber = await db.query.waitlistSubscribers.findFirst({
     where: and(
       eq(waitlistSubscribers.verificationTokenHash, tokenHash),
       eq(waitlistSubscribers.status, "pending"),
-      gt(waitlistSubscribers.verificationTokenExpiresAt, now),
+      gt(waitlistSubscribers.verificationTokenExpiresAt, lookupNow),
     ),
   });
 
@@ -228,22 +287,26 @@ export async function verifyWaitlistEmail(token: string) {
   const unsubscribe = createSecureToken();
 
   const confirmed = await db.transaction(async (tx) => {
+    // Read the clock inside the transaction.
+    // This is the authoritative time for token expiration and confirmation.
+    const confirmationTime = new Date();
+
     const [row] = await tx
       .update(waitlistSubscribers)
       .set({
         status: "confirmed",
-        confirmedAt: now,
+        confirmedAt: confirmationTime,
         verificationTokenHash: null,
         verificationTokenExpiresAt: null,
         unsubscribeTokenHash: unsubscribe.tokenHash,
-        updatedAt: now,
+        updatedAt: confirmationTime,
       })
       .where(
         and(
           eq(waitlistSubscribers.id, subscriber.id),
           eq(waitlistSubscribers.status, "pending"),
           eq(waitlistSubscribers.verificationTokenHash, tokenHash),
-          gt(waitlistSubscribers.verificationTokenExpiresAt, now),
+          gt(waitlistSubscribers.verificationTokenExpiresAt, confirmationTime),
         ),
       )
       .returning({
