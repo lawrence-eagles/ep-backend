@@ -138,9 +138,17 @@ export async function verifyWaitlistTurnstile(
           )
         : [];
 
-      // Cloudflare internal errors indicate a verification-service
-      // failure, not an invalid visitor token.
-      if (errorCodes.includes("internal-error")) {
+      /**
+       * These errors indicate backend or verification-service
+       * configuration failures, not invalid visitor tokens.
+       *
+       * A visitor cannot fix these problems by completing
+       * another Turnstile challenge.
+       */
+      if (
+        errorCodes.includes("internal-error") ||
+        errorCodes.includes("invalid-input-secret")
+      ) {
         return {
           success: false,
           reason: "verification-unavailable",
@@ -148,7 +156,7 @@ export async function verifyWaitlistTurnstile(
         };
       }
 
-      // Actual token rejections remain invalid-token.
+      // Actual visitor-token rejections remain invalid-token.
       return {
         success: false,
         reason: "invalid-token",

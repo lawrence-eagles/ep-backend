@@ -34,11 +34,18 @@ export function waitlistRateLimit(
     try {
       const redis = await getRedis();
 
-      const ip =
-        req.headers["cf-connecting-ip"]?.toString() ||
-        req.ip ||
-        req.socket.remoteAddress ||
-        "unknown";
+      /**
+       * Use the direct socket address as the client identity.
+       *
+       * Do not trust CF-Connecting-IP or forwarded headers here:
+       * - CF-Connecting-IP can be spoofed if the origin is publicly accessible.
+       * - req.ip can trust client-supplied forwarding headers when Express
+       *   proxy trust is enabled without a properly restricted trusted proxy.
+       *
+       * The socket address represents the peer directly connected to
+       * the Express server and cannot be overridden through HTTP headers.
+       */
+      const ip = req.socket.remoteAddress || "unknown";
 
       const ipHash = createHmac("sha256", env.IP_HASH_SECRET)
         .update(ip)

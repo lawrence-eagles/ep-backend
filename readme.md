@@ -501,11 +501,3 @@ Apply the updates as specified above to my sofeDeleteCommentContoller.ts file an
 
 If an email scanner opens the verification URL first, GET /verify confirms the subscriber and consumes the token. Express 5 also invokes this handler for HEAD unless an earlier HEAD route handles the path. The recipient's later click then reports an invalid link. Make GET and HEAD read-only. Keep the email link as the entry point, and confirm only after the recipient selects an action that submits a POST. (expressjs.com)
   -->
-
-1.  waitlistController
-2.  waitlist inngest function
-3.  env
-4.  waitlistRatelimit
-5.  waitlist Routes
-6.  waitlist service
-7.  waitlist Turnstile

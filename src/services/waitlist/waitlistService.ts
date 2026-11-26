@@ -1,12 +1,29 @@
-import { and, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { waitlistEmailOutbox, waitlistSubscribers } from "../../db/schema";
 
-import { createSecureToken, encryptPayload, hashToken } from "./waitlistTokens";
+import {
+  createSecureToken,
+  decryptPayload,
+  encryptPayload,
+  hashToken,
+} from "./waitlistTokens";
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * Minimum remaining verification-token lifetime before reusing
+ * an existing token without extending its expiration.
+ *
+ * If the remaining lifetime is below this threshold, the existing
+ * token's expiration is extended before its email is queued.
+ *
+ * This preserves the existing link while providing sufficient
+ * time for email delivery and recipient action.
+ */
+const MIN_REMAINING_VERIFICATION_TTL_MS = 60 * 60 * 1000;
 
 type EmailPayload = {
   email: string;
@@ -177,24 +194,65 @@ export async function resendWaitlistVerification(emailInput: string) {
 
     let verification: ReturnType<typeof createSecureToken> | null = null;
 
+    let shouldExtendTokenExpiry = false;
+
     if (existingTokenIsValid) {
-      // Reuse the encrypted payload associated with the current token.
-      // This preserves the already-delivered verification link.
-      const existingOutbox = await tx.query.waitlistEmailOutbox.findFirst({
+      /**
+       * Find the outbox payload associated with the subscriber's
+       * CURRENT active verification token.
+       *
+       * Do not select by createdAt. PostgreSQL's createdAt default
+       * can reflect transaction start time rather than insertion order.
+       *
+       * Decrypt each candidate and compare its token hash against
+       * the subscriber's current verificationTokenHash.
+       */
+      const existingOutboxRows = await tx.query.waitlistEmailOutbox.findMany({
         where: and(
           eq(waitlistEmailOutbox.subscriberId, currentSubscriber.id),
           eq(waitlistEmailOutbox.type, "verification"),
         ),
-        orderBy: [desc(waitlistEmailOutbox.createdAt)],
       });
 
-      // Never invalidate a valid token just because its original
-      // encrypted outbox payload cannot be found.
-      if (!existingOutbox) {
+      const matchingOutbox = existingOutboxRows.find((outbox) => {
+        try {
+          const payload = decryptPayload<EmailPayload>(outbox.payloadEncrypted);
+
+          return (
+            typeof payload.email === "string" &&
+            typeof payload.token === "string" &&
+            hashToken(payload.token) === currentSubscriber.verificationTokenHash
+          );
+        } catch {
+          // Ignore unreadable or invalid historical outbox payloads.
+          return false;
+        }
+      });
+
+      /**
+       * Never invalidate an existing valid token when its matching
+       * encrypted payload cannot be found.
+       */
+      if (!matchingOutbox) {
         return false;
       }
 
-      payloadEncrypted = existingOutbox.payloadEncrypted;
+      payloadEncrypted = matchingOutbox.payloadEncrypted;
+
+      /**
+       * Preserve the existing verification link.
+       *
+       * When the token is approaching expiration, extend its lifetime
+       * before queuing the resend. This prevents the recipient from
+       * receiving a link that is about to expire.
+       *
+       * The token hash remains unchanged, so previously delivered
+       * copies of the same verification link remain usable.
+       */
+      shouldExtendTokenExpiry =
+        currentSubscriber.verificationTokenExpiresAt!.getTime() -
+          now.getTime() <
+        MIN_REMAINING_VERIFICATION_TTL_MS;
     } else {
       // The existing token has expired or is missing.
       // A new token is now required.
@@ -218,10 +276,18 @@ export async function resendWaitlistVerification(emailInput: string) {
           verificationSentAt: now,
           updatedAt: now,
         }
-      : {
-          verificationSentAt: now,
-          updatedAt: now,
-        };
+      : shouldExtendTokenExpiry
+        ? {
+            verificationTokenExpiresAt: new Date(
+              now.getTime() + VERIFICATION_TTL_MS,
+            ),
+            verificationSentAt: now,
+            updatedAt: now,
+          }
+        : {
+            verificationSentAt: now,
+            updatedAt: now,
+          };
 
     const [row] = await tx
       .update(waitlistSubscribers)
@@ -249,8 +315,8 @@ export async function resendWaitlistVerification(emailInput: string) {
       return false;
     }
 
-    // Queue the existing encrypted payload when the token is still
-    // valid, or the newly generated payload when it has expired.
+    // Queue the matching existing encrypted payload when the token
+    // is still valid, or the newly generated payload when expired.
     await tx.insert(waitlistEmailOutbox).values({
       subscriberId: row.id,
       type: "verification",
@@ -287,26 +353,31 @@ export async function verifyWaitlistEmail(token: string) {
   const unsubscribe = createSecureToken();
 
   const confirmed = await db.transaction(async (tx) => {
-    // Read the clock inside the transaction.
-    // This is the authoritative time for token expiration and confirmation.
-    const confirmationTime = new Date();
-
+    /**
+     * Use PostgreSQL's clock_timestamp() for the authoritative
+     * expiration check.
+     *
+     * Unlike now(), clock_timestamp() advances during the transaction.
+     * PostgreSQL can therefore evaluate the expiration predicate
+     * against the actual statement execution time, including time
+     * spent waiting for a concurrent row lock.
+     */
     const [row] = await tx
       .update(waitlistSubscribers)
       .set({
         status: "confirmed",
-        confirmedAt: confirmationTime,
+        confirmedAt: sql<Date>`clock_timestamp()`,
         verificationTokenHash: null,
         verificationTokenExpiresAt: null,
         unsubscribeTokenHash: unsubscribe.tokenHash,
-        updatedAt: confirmationTime,
+        updatedAt: sql<Date>`clock_timestamp()`,
       })
       .where(
         and(
           eq(waitlistSubscribers.id, subscriber.id),
           eq(waitlistSubscribers.status, "pending"),
           eq(waitlistSubscribers.verificationTokenHash, tokenHash),
-          gt(waitlistSubscribers.verificationTokenExpiresAt, confirmationTime),
+          sql`${waitlistSubscribers.verificationTokenExpiresAt} > clock_timestamp()`,
         ),
       )
       .returning({
