@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { shareApps, shareClicks } from "../db/schema";
 import type { Request, Response } from "express";
 import { getRedis } from "../lib/redis";
-import { hashIP } from "../utils/security";
+import { hashIP, isBot } from "../utils/security";
 import { db } from "../db";
 import { getEnv } from "../lib/env";
 import { getClientIp } from "../utils/clientIpHelper";
@@ -79,7 +79,7 @@ export const shareAppsRedirectControllerVersionOne = async (
     const userAgent = normalizeUserAgent(req.headers["user-agent"]);
 
     // 🔥 3. BOT / FRAUD FILTER
-    if (req.ip === "known-bot") {
+    if (isBot(userAgent)) {
       return res.redirect(`${env.FRONTEND_URL}/notfound`);
     }
 

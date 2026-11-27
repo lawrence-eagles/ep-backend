@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { isIP } from "node:net";
 import { z } from "zod";
 import { and, desc, eq, ilike, sql, type SQL } from "drizzle-orm";
 
@@ -16,6 +17,10 @@ import {
 import { verifyWaitlistTurnstile } from "../services/waitlist/waitlistTurnstile";
 
 const env = getEnv();
+
+// ─────────────────────────────────────────────
+// 🔒 SAFE DATABASE ERROR LOGGING
+// ─────────────────────────────────────────────
 
 /**
  * Logs only a fixed operation name and a validated PostgreSQL SQLSTATE.
@@ -67,6 +72,10 @@ function logWaitlistError(operation: WaitlistOperation, error: unknown): void {
   });
 }
 
+// ─────────────────────────────────────────────
+// 🔐 TURNSTILE CONFIGURATION
+// ─────────────────────────────────────────────
+
 const ALLOWED_TURNSTILE_HOSTNAMES = new Set([
   "eaglespress.com",
   "www.eaglespress.com",
@@ -100,19 +109,43 @@ type TurnstileControllerResult =
     };
 
 /**
+ * Resolves the visitor IP supplied by Railway's public HTTP ingress.
+ *
+ * Do not use req.ip here because Express trust proxy is disabled.
+ * With that setting, req.ip identifies the immediate connection,
+ * which is normally Railway's ingress proxy rather than the visitor.
+ *
+ * Railway's public HTTP ingress supplies X-Real-IP. Validate the
+ * header before passing it to Cloudflare as the optional remoteip.
+ *
+ * If the header is missing or invalid, return undefined so the
+ * Turnstile service omits the optional remoteip parameter.
+ *
+ * This resolver assumes requests reach this application through
+ * Railway's public HTTP ingress, not an unsanitized private-network path.
+ */
+function getTrustedVisitorIp(req: Request): string | undefined {
+  const realIp = req.get("x-real-ip")?.trim();
+
+  if (!realIp || isIP(realIp) === 0) {
+    return undefined;
+  }
+
+  return realIp;
+}
+
+/**
  * Verifies a Turnstile token and checks that it was generated
  * for one of the approved Eaglespress website hostnames.
- *
- * req.ip is used as the visitor IP. Ensure Express trust proxy
- * is configured correctly when running behind Railway or another
- * reverse proxy.
  */
 async function validateTurnstile(
   req: Request,
   token: string,
 ): Promise<TurnstileControllerResult> {
+  const remoteIp = getTrustedVisitorIp(req);
+
   const verification = await verifyWaitlistTurnstile(token, {
-    remoteIp: req.ip,
+    remoteIp,
   });
 
   if (!verification.success) {
@@ -147,6 +180,10 @@ async function validateTurnstile(
   return { success: true };
 }
 
+// ─────────────────────────────────────────────
+// 🔗 FRONTEND REDIRECT
+// ─────────────────────────────────────────────
+
 function frontendRedirect(path: string, status: string): string {
   const url = new URL(path, env.FRONTEND_URL);
 
@@ -154,6 +191,10 @@ function frontendRedirect(path: string, status: string): string {
 
   return url.toString();
 }
+
+// ─────────────────────────────────────────────
+// 🚀 PUBLIC WAITLIST ENDPOINTS
+// ─────────────────────────────────────────────
 
 export async function subscribe(req: Request, res: Response) {
   const parsed = subscribeSchema.safeParse(req.body);
@@ -290,7 +331,10 @@ export async function unsubscribe(req: Request, res: Response) {
   }
 }
 
-// Privacy-preserving status check.
+// ─────────────────────────────────────────────
+// 🔎 PRIVACY-PRESERVING STATUS CHECK
+// ─────────────────────────────────────────────
+
 // This endpoint does not disclose whether an address is pending,
 // confirmed, unsubscribed, bounced, or absent.
 export async function statusCheck(req: Request, res: Response) {
@@ -306,6 +350,10 @@ export async function statusCheck(req: Request, res: Response) {
     message: "We cannot disclose subscription status through this endpoint.",
   });
 }
+
+// ─────────────────────────────────────────────
+// 🛠️ ADMIN ENDPOINTS
+// ─────────────────────────────────────────────
 
 const adminListSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -421,6 +469,10 @@ export async function adminWaitlistStats(_req: Request, res: Response) {
     });
   }
 }
+
+// ─────────────────────────────────────────────
+// 📤 ADMIN CSV EXPORT
+// ─────────────────────────────────────────────
 
 function csvCell(value: unknown): string {
   let text = value == null ? "" : String(value);
