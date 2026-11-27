@@ -10,6 +10,7 @@ import {
   adminExportSubscribers,
 } from "../controllers/waitlistController";
 import { requireAuth } from "../middleware/requireAuth";
+import { requireModerator } from "../middleware/moderatorAuth";
 import { waitlistRateLimit } from "../middleware/waitlistRateLimit";
 
 const router = Router();
