@@ -52,7 +52,11 @@ app.use(
 // PROXY AND COOKIES
 // ─────────────────────────────────────────────
 
-app.set("trust proxy", true);
+// app.set("trust proxy", true);
+
+// Railway terminates public HTTP traffic at its ingress proxy.
+// Do not let Express interpret X-Forwarded-* headers as authoritative.
+app.set("trust proxy", false);
 
 app.use(cookieParser());
 
