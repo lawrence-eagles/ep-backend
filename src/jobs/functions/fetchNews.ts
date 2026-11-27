@@ -1427,10 +1427,15 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               } satisfies ArticleCreatedEventData,
             }));
 
-            await step.sendEvent(
-              `send-article-created-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
-              events,
-            );
+            // --------------------------------------------------------------
+            // Temporarily disabled: article.created events are not needed
+            // in Eaglespress v1. Since no notification feature is rolled out.
+            // --------------------------------------------------------------
+
+            // await step.sendEvent(
+            //   `send-article-created-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
+            //   events,
+            // );
 
             // ─────────────────────────────────────────────
             // REDIS DEDUPE FOR THIS SAME BATCH

@@ -116,7 +116,7 @@ export const deliverWaitlistEmails: InngestFunction.Any =
         limit: 1,
       },
       triggers: {
-        cron: "*/1 * * * *",
+        cron: "0 */6 * * *",
       },
     },
     async ({ step }) => {

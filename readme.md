@@ -471,24 +471,6 @@ timeouts: {
  -->
 
 <!--
-Reporting system todo:
-1. implement soft delete comments that violates Google UGC policy ✅
-2. implement ban user feature --- ban users cannot comment but they can use the app. ✅
-3. in the UI where the use report a comment there should be a way to toggle hide comment.
-4. change the order of user reports to desc ✅
- -->
-
- <!-- 
- 1. Comment filtering that handles hide and unhide comments ✅
- 2. Endpoint to view all hidden comments ✅
- 3. Endpoint to soft delete comments that violates Google UGC policy during moderation ✅
- 4. Comment filtering that handles soft deleted comments. ✅
- 5. Endpoint to ban a user who violates Google UGC policy ✅
- 6. Endpoint to view all ban users ✅
- 7. Endpoint to unban a banned user  ✅
-  -->
-
-<!--
 The code above is my sofeDeleteCommentContoller.ts, you noted above that the following updates need to be done:
 
 
@@ -501,3 +483,5 @@ Apply the updates as specified above to my sofeDeleteCommentContoller.ts file an
 
 If an email scanner opens the verification URL first, GET /verify confirms the subscriber and consumes the token. Express 5 also invokes this handler for HEAD unless an earlier HEAD route handles the path. The recipient's later click then reports an invalid link. Make GET and HEAD read-only. Keep the email link as the entry point, and confirm only after the recipient selects an action that submits a POST. (expressjs.com)
   -->
+
+  <!-- Turnstile action = waitlist -->

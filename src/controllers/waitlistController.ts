@@ -81,6 +81,8 @@ const ALLOWED_TURNSTILE_HOSTNAMES = new Set([
   "www.eaglespress.com",
 ]);
 
+const TURNSTILE_EXPECTED_ACTION = "waitlist";
+
 const subscribeSchema = z.object({
   email: z.email().max(254),
   source: z.string().trim().max(100).optional(),
@@ -136,7 +138,8 @@ function getTrustedVisitorIp(req: Request): string | undefined {
 
 /**
  * Verifies a Turnstile token and checks that it was generated
- * for one of the approved Eaglespress website hostnames.
+ * for one of the approved Eaglespress website hostnames and
+ * the expected "waitlist" action.
  */
 async function validateTurnstile(
   req: Request,
@@ -146,6 +149,7 @@ async function validateTurnstile(
 
   const verification = await verifyWaitlistTurnstile(token, {
     remoteIp,
+    expectedAction: TURNSTILE_EXPECTED_ACTION,
   });
 
   if (!verification.success) {
