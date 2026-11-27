@@ -1,11 +1,14 @@
 import type { Request, Response, NextFunction } from "express";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
+import { getEnv } from "../lib/env";
 import { moderatorRoles } from "../db/schema";
+
+const env = getEnv();
 
 function getBootstrapAdminIds(): Set<string> {
   return new Set(
-    (process.env.MODERATOR_ADMIN_USER_IDS ?? "")
+    (env.MODERATOR_ADMIN_USER_IDS ?? "")
       .split(",")
       .map((id) => id.trim())
       .filter(Boolean),

@@ -240,7 +240,7 @@ function buildReplyCursor(
 
 // ─────────────────────────────────────────────────────────────
 // FETCH COMMENTS CONTROLLER
-// GET /api/v1/posts/comments/:postId
+// GET /api/v1/comments/:postId
 // ─────────────────────────────────────────────────────────────
 
 export const fetchCommentsVersionOne = async (req: Request, res: Response) => {

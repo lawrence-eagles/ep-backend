@@ -29,6 +29,7 @@ import userBlockRoutes from "./routes/userBlock";
 import reportingRoutes from "./routes/reportingRoutes";
 import commentVisibilityRoutes from "./routes/commentVisibilityRoutes";
 import moderationRoutes from "./routes/moderationRoutes";
+import waitlistRoutes from "./routes/waitlistRoutes";
 
 const env = getEnv();
 const frontendOrigin = new URL(env.FRONTEND_URL).origin;
@@ -51,7 +52,11 @@ app.use(
 // PROXY AND COOKIES
 // ─────────────────────────────────────────────
 
-app.set("trust proxy", true);
+// app.set("trust proxy", true);
+
+// Railway terminates public HTTP traffic at its ingress proxy.
+// Do not let Express interpret X-Forwarded-* headers as authoritative.
+app.set("trust proxy", false);
 
 app.use(cookieParser());
 
@@ -113,7 +118,7 @@ app.use("/api/v1/comments-visibility", commentVisibilityRoutes);
 // existing comment route
 app.use("/api/v1/comments", commentsRoutes);
 app.use("/api/v1/single-post/:slug", singlePostRoutes);
-
+app.use("/api/v1/waitlist", waitlistRoutes);
 app.use("/s/:id", redirectRoutes);
 
 // ─────────────────────────────────────────────

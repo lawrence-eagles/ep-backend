@@ -36,6 +36,13 @@
       "when": 1794230359976,
       "tag": "0004_google-UGC",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795704275865,
+      "tag": "0005_email_subscription",
+      "breakpoints": true
     }
   ]
 }

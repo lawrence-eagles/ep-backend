@@ -5,6 +5,7 @@ import { getRedis } from "../lib/redis";
 import { hashIP, isBot } from "../utils/security";
 import { db } from "../db";
 import { getEnv } from "../lib/env";
+import { getClientIp } from "../utils/clientIpHelper";
 
 const env = getEnv();
 
@@ -33,18 +34,18 @@ function normalizeUserAgent(
 }
 
 function getCookieOptions(req: Request) {
-  const proto = req.headers["x-forwarded-proto"];
+  const forwardedProto = req.get("x-forwarded-proto");
 
   const isHttps =
     req.secure ||
-    (typeof proto === "string" && proto.split(",")[0].trim() === "https");
+    forwardedProto?.split(",")[0].trim().toLowerCase() === "https";
 
   return {
     httpOnly: true,
     path: "/",
-    sameSite: isHttps ? "none" : "lax",
+    sameSite: isHttps ? ("none" as const) : ("lax" as const),
     secure: isHttps,
-  } as const;
+  };
 }
 
 // ─────────────────────────────────────────────
@@ -78,16 +79,12 @@ export const shareAppsRedirectControllerVersionOne = async (
     const userAgent = normalizeUserAgent(req.headers["user-agent"]);
 
     // 🔥 3. BOT / FRAUD FILTER
-    if (req.ip === "known-bot") {
-      return res.redirect(`${env.FRONTEND_URL}/notfound`);
-    }
-
     if (isBot(userAgent)) {
       return res.redirect(`${env.FRONTEND_URL}/notfound`);
     }
 
-    // ✅ 4. Resolve IP
-    const ip = req.ip || "0.0.0.0";
+    // Resolve visitor IP through Railway's public HTTP ingress.
+    const ip = getClientIp(req);
     const ipHash = hashIP(ip);
 
     // ─────────────────────────────────────────
