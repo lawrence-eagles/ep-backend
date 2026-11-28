@@ -134,13 +134,19 @@ type SavedPost = {
   url: string;
 };
 
-type ArticleCreatedEventData = {
-  postId: string;
-  categoryId: string;
-  title: string;
-  summary: string;
-  slug: string;
-};
+// ---------------------------------
+// this is the notification even type
+// it is commented out because notification
+// is not implemented yet, but it is here for future reference
+// ----------------------------------
+
+// type ArticleCreatedEventData = {
+//   postId: string;
+//   categoryId: string;
+//   title: string;
+//   summary: string;
+//   slug: string;
+// };
 
 /**
  * Errors caused by temporary network conditions during URL
@@ -1409,28 +1415,39 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               continue;
             }
 
-            const events = savedPosts.map((post: SavedPost) => ({
-              id: `article-created-${post.id}`,
+            // ---------------------------------------------------
+            // Events for notification
+            // it is commented out because notificaiton is not
+            // rolled out in Eaglespress v1
+            // ---------------------------------------------------
 
-              name: "article.created",
+            // const events = savedPosts.map((post: SavedPost) => ({
+            //   id: `article-created-${post.id}`,
 
-              data: {
-                postId: post.id,
+            //   name: "article.created",
 
-                categoryId: post.categoryId,
+            //   data: {
+            //     postId: post.id,
 
-                title: post.title,
+            //     categoryId: post.categoryId,
 
-                summary: post.description ?? "",
+            //     title: post.title,
 
-                slug: post.slug,
-              } satisfies ArticleCreatedEventData,
-            }));
+            //     summary: post.description ?? "",
 
-            await step.sendEvent(
-              `send-article-created-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
-              events,
-            );
+            //     slug: post.slug,
+            //   } satisfies ArticleCreatedEventData,
+            // }));
+
+            // --------------------------------------------------------------
+            // Temporarily disabled: article.created events are not needed
+            // in Eaglespress v1. Since no notification feature is rolled out.
+            // --------------------------------------------------------------
+
+            // await step.sendEvent(
+            //   `send-article-created-${feedIndex}-${batchIndex}-${eventBatchIndex}`,
+            //   events,
+            // );
 
             // ─────────────────────────────────────────────
             // REDIS DEDUPE FOR THIS SAME BATCH
