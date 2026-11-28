@@ -1,3 +1,4 @@
+
 import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -17,6 +18,15 @@ const RESEND_COOLDOWN_MS = 60 * 1000;
 const WAITLIST_DELIVERY_EVENT = "waitlist/email.delivery.requested";
 
 /**
+ * Maximum time to wait for Inngest event publication.
+ *
+ * The underlying Inngest SDK request cannot be cancelled through
+ * the client. Promise.race() therefore allows this service to stop
+ * waiting while the original request continues in the background.
+ */
+const EVENT_PUBLICATION_TIMEOUT_MS = 5_000;
+
+/**
  * Trigger the waitlist email delivery function after an email
  * has been successfully committed to the database outbox.
  *
@@ -24,22 +34,42 @@ const WAITLIST_DELIVERY_EVENT = "waitlist/email.delivery.requested";
  * must not cause an already-committed subscription or verification
  * operation to be reported as failed.
  *
+ * The publication wait is bounded so that a slow or unresponsive
+ * Inngest endpoint does not unnecessarily delay the HTTP response.
+ *
  * The scheduled delivery cron remains the fallback for emails
  * whose immediate delivery event could not be published.
  */
 async function triggerWaitlistEmailDelivery(): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
   try {
-    await inngest.send({
-      name: WAITLIST_DELIVERY_EVENT,
-      data: {
-        reason: "queued",
-      },
-    });
+    await Promise.race([
+      inngest.send({
+        name: WAITLIST_DELIVERY_EVENT,
+        data: {
+          reason: "queued",
+        },
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(
+            new Error(
+              `Inngest event publication timed out after ${EVENT_PUBLICATION_TIMEOUT_MS}ms`,
+            ),
+          );
+        }, EVENT_PUBLICATION_TIMEOUT_MS);
+      }),
+    ]);
   } catch (error) {
     console.error(
       "[Waitlist] Failed to trigger immediate email delivery. The scheduled delivery job will retry pending emails.",
       error,
     );
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 

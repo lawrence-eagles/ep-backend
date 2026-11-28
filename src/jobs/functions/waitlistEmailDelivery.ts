@@ -1,3 +1,4 @@
+
 import { and, eq, lte, or, inArray } from "drizzle-orm";
 import { Resend } from "resend";
 import type { InngestFunction } from "inngest";
@@ -301,21 +302,32 @@ export const deliverWaitlistEmails: InngestFunction.Any =
               // Schedule the next delivery exactly when the
               // retry becomes eligible.
               if (!permanentlyFailed) {
-                await inngest.send({
-                  name: DELIVERY_EVENT,
-                  id: `waitlist-retry-${item.id}-${attempts}`,
-                  data: {
-                    reason: "retry",
-                    outboxId: item.id,
-                    attempt: attempts,
-                  },
-                  ts: nextAttemptAt.getTime(),
-                });
+                try {
+                  await inngest.send({
+                    name: DELIVERY_EVENT,
+                    id: `waitlist-retry-${item.id}-${attempts}`,
+                    data: {
+                      reason: "retry",
+                      outboxId: item.id,
+                      attempt: attempts,
+                    },
+                    ts: nextAttemptAt.getTime(),
+                  });
+                } catch (scheduleError) {
+                  // The retry state has already been persisted.
+                  // If event publication fails, leave the item pending
+                  // with its nextAttemptAt value. The scheduled cron
+                  // will reclaim it once it becomes eligible.
+                  console.error(
+                    `[Waitlist] Failed to schedule retry for outbox item ${item.id}. The scheduled delivery job will retry it.`,
+                    scheduleError,
+                  );
+                }
               }
 
-              // The outbox owns retry state and scheduling.
-              // Do not throw after successfully persisting
-              // the retry state and scheduling the next run.
+              // Do not throw after persisting the retry state.
+              // This allows the remaining emails in the batch
+              // to continue processing.
               return;
             }
           });
