@@ -23,6 +23,8 @@ const MAX_ATTEMPTS = 8;
 const BATCH_SIZE = 20;
 const LOCK_DURATION_MS = 5 * 60 * 1000;
 
+const MAX_BATCHES_PER_RUN = 40;
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     const replacements: Record<string, string> = {
@@ -125,7 +127,7 @@ export const deliverWaitlistEmails: InngestFunction.Any =
 
       // Keep claiming and processing batches until no eligible
       // emails remain in the outbox.
-      while (true) {
+      while (batchNumber < MAX_BATCHES_PER_RUN) {
         const claimed = await step.run(
           `claim-waitlist-outbox-${batchNumber}`,
           async () => {
