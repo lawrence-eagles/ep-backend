@@ -25,6 +25,8 @@ const LOCK_DURATION_MS = 5 * 60 * 1000;
 
 const MAX_BATCHES_PER_RUN = 40;
 
+const DELIVERY_EVENT = "waitlist/email.delivery.requested";
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     const replacements: Record<string, string> = {
@@ -117,16 +119,23 @@ export const deliverWaitlistEmails: InngestFunction.Any =
       concurrency: {
         limit: 1,
       },
-      triggers: {
-        cron: "0 */6 * * *",
-      },
+      triggers: [
+        {
+          // Immediately process newly queued emails,
+          // retry events and continuation events.
+          event: DELIVERY_EVENT,
+        },
+        {
+          // Preserve the four-times-daily delivery schedule.
+          cron: "0 */6 * * *",
+        },
+      ],
     },
-    async ({ step }) => {
+    async ({ step, runId }) => {
       let totalProcessed = 0;
       let batchNumber = 0;
 
-      // Keep claiming and processing batches until no eligible
-      // emails remain in the outbox.
+      // Process up to MAX_BATCHES_PER_RUN batches per execution.
       while (batchNumber < MAX_BATCHES_PER_RUN) {
         const claimed = await step.run(
           `claim-waitlist-outbox-${batchNumber}`,
@@ -171,14 +180,14 @@ export const deliverWaitlistEmails: InngestFunction.Any =
           },
         );
 
-        // No more eligible emails. End the draining loop.
+        // No more eligible emails.
         if (claimed.length === 0) {
           break;
         }
 
         totalProcessed += claimed.length;
 
-        // Process every email in the claimed batch.
+        // Deliver every email in the claimed batch.
         for (const item of claimed) {
           await step.run(`deliver-waitlist-email-${item.id}`, async () => {
             try {
@@ -272,37 +281,73 @@ export const deliverWaitlistEmails: InngestFunction.Any =
               const attempts = item.attempts + 1;
               const permanentlyFailed = attempts >= MAX_ATTEMPTS;
 
+              const nextAttemptAt = new Date(
+                Date.now() + Math.min(60 * 60 * 1000, 2 ** attempts * 30_000),
+              );
+
+              // Persist the retry state before scheduling
+              // the next delivery invocation.
               await db
                 .update(waitlistEmailOutbox)
                 .set({
                   status: permanentlyFailed ? "failed" : "pending",
                   attempts,
-                  nextAttemptAt: new Date(
-                    Date.now() +
-                      Math.min(60 * 60 * 1000, 2 ** attempts * 30_000),
-                  ),
+                  nextAttemptAt,
                   lockedUntil: null,
                   lastError: message.slice(0, 1000),
                 })
                 .where(eq(waitlistEmailOutbox.id, item.id));
 
-              // The outbox now owns retry scheduling.
-              // Do not throw after successfully persisting the retry state.
-              // The next cron execution will claim this item only after
-              // nextAttemptAt has elapsed and will read its updated attempts.
+              // Schedule the next delivery exactly when the
+              // retry becomes eligible.
+              if (!permanentlyFailed) {
+                await inngest.send({
+                  name: DELIVERY_EVENT,
+                  id: `waitlist-retry-${item.id}-${attempts}`,
+                  data: {
+                    reason: "retry",
+                    outboxId: item.id,
+                    attempt: attempts,
+                  },
+                  ts: nextAttemptAt.getTime(),
+                });
+              }
+
+              // The outbox owns retry state and scheduling.
+              // Do not throw after successfully persisting
+              // the retry state and scheduling the next run.
               return;
             }
           });
         }
 
-        // Move to the next batch.
-        // Each iteration has a unique Inngest step ID.
         batchNumber++;
+      }
+
+      // If the batch limit was reached, immediately schedule
+      // another execution to continue draining the outbox.
+      //
+      // This prevents large backlogs from waiting until the
+      // next six-hour cron execution.
+      const continuationScheduled = batchNumber === MAX_BATCHES_PER_RUN;
+
+      if (continuationScheduled) {
+        await step.run("schedule-waitlist-outbox-continuation", async () => {
+          await inngest.send({
+            name: DELIVERY_EVENT,
+            id: `waitlist-continuation-${runId}`,
+            data: {
+              reason: "continuation",
+              previousRunId: runId,
+            },
+          });
+        });
       }
 
       return {
         processed: totalProcessed,
         batches: batchNumber,
+        continuationScheduled,
       };
     },
   );

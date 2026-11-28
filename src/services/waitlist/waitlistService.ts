@@ -2,6 +2,7 @@ import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { waitlistEmailOutbox, waitlistSubscribers } from "../../db/schema";
+import { inngest } from "../../lib/inngest";
 
 import {
   createSecureToken,
@@ -12,6 +13,35 @@ import {
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
+
+const WAITLIST_DELIVERY_EVENT = "waitlist/email.delivery.requested";
+
+/**
+ * Trigger the waitlist email delivery function after an email
+ * has been successfully committed to the database outbox.
+ *
+ * This is intentionally best-effort. A temporary Inngest failure
+ * must not cause an already-committed subscription or verification
+ * operation to be reported as failed.
+ *
+ * The scheduled delivery cron remains the fallback for emails
+ * whose immediate delivery event could not be published.
+ */
+async function triggerWaitlistEmailDelivery(): Promise<void> {
+  try {
+    await inngest.send({
+      name: WAITLIST_DELIVERY_EVENT,
+      data: {
+        reason: "queued",
+      },
+    });
+  } catch (error) {
+    console.error(
+      "[Waitlist] Failed to trigger immediate email delivery. The scheduled delivery job will retry pending emails.",
+      error,
+    );
+  }
+}
 
 /**
  * Minimum remaining verification-token lifetime before reusing
@@ -95,6 +125,11 @@ export async function subscribeToWaitlist(emailInput: string, source?: string) {
       return subscriber;
     });
 
+    // The transaction has committed successfully before dispatching.
+    if (updated) {
+      await triggerWaitlistEmailDelivery();
+    }
+
     return {
       result: updated
         ? ("verification_sent" as const)
@@ -137,6 +172,11 @@ export async function subscribeToWaitlist(emailInput: string, source?: string) {
 
     return subscriber;
   });
+
+  // The transaction has committed successfully before dispatching.
+  if (inserted) {
+    await triggerWaitlistEmailDelivery();
+  }
 
   return {
     result: inserted
@@ -326,6 +366,11 @@ export async function resendWaitlistVerification(emailInput: string) {
     return true;
   });
 
+  // The transaction has committed successfully before dispatching.
+  if (updated) {
+    await triggerWaitlistEmailDelivery();
+  }
+
   // Keep the response generic to avoid exposing subscriber information.
   return {
     result: updated
@@ -399,6 +444,11 @@ export async function verifyWaitlistEmail(token: string) {
 
     return true;
   });
+
+  // The transaction has committed successfully before dispatching.
+  if (confirmed) {
+    await triggerWaitlistEmailDelivery();
+  }
 
   return {
     result: confirmed
