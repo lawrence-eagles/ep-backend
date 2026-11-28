@@ -120,156 +120,187 @@ export const deliverWaitlistEmails: InngestFunction.Any =
       },
     },
     async ({ step }) => {
-      const claimed = await step.run("claim-waitlist-outbox", async () => {
-        return db.transaction(async (tx) => {
-          const now = new Date();
+      let totalProcessed = 0;
+      let batchNumber = 0;
 
-          const rows = await tx
-            .select()
-            .from(waitlistEmailOutbox)
-            .where(
-              and(
-                or(
-                  eq(waitlistEmailOutbox.status, "pending"),
+      // Keep claiming and processing batches until no eligible
+      // emails remain in the outbox.
+      while (true) {
+        const claimed = await step.run(
+          `claim-waitlist-outbox-${batchNumber}`,
+          async () => {
+            return db.transaction(async (tx) => {
+              const now = new Date();
+
+              const rows = await tx
+                .select()
+                .from(waitlistEmailOutbox)
+                .where(
                   and(
-                    eq(waitlistEmailOutbox.status, "processing"),
-                    lte(waitlistEmailOutbox.lockedUntil, now),
+                    or(
+                      eq(waitlistEmailOutbox.status, "pending"),
+                      and(
+                        eq(waitlistEmailOutbox.status, "processing"),
+                        lte(waitlistEmailOutbox.lockedUntil, now),
+                      ),
+                    ),
+                    lte(waitlistEmailOutbox.nextAttemptAt, now),
                   ),
-                ),
-                lte(waitlistEmailOutbox.nextAttemptAt, now),
-              ),
-            )
-            .limit(BATCH_SIZE)
-            .for("update", { skipLocked: true });
+                )
+                .limit(BATCH_SIZE)
+                .for("update", { skipLocked: true });
 
-          if (rows.length === 0) {
-            return [];
-          }
+              if (rows.length === 0) {
+                return [];
+              }
 
-          const ids = rows.map((row) => row.id);
+              const ids = rows.map((row) => row.id);
 
-          await tx
-            .update(waitlistEmailOutbox)
-            .set({
-              status: "processing",
-              lockedUntil: new Date(Date.now() + LOCK_DURATION_MS),
-            })
-            .where(inArray(waitlistEmailOutbox.id, ids));
+              await tx
+                .update(waitlistEmailOutbox)
+                .set({
+                  status: "processing",
+                  lockedUntil: new Date(now.getTime() + LOCK_DURATION_MS),
+                })
+                .where(inArray(waitlistEmailOutbox.id, ids));
 
-          return rows;
-        });
-      });
-
-      for (const item of claimed) {
-        await step.run(`deliver-waitlist-email-${item.id}`, async () => {
-          try {
-            const payload = decryptPayload<EmailPayload>(item.payloadEncrypted);
-
-            const subscriber = await db.query.waitlistSubscribers.findFirst({
-              where: eq(waitlistSubscribers.id, item.subscriberId),
+              return rows;
             });
+          },
+        );
 
-            // Do not send an old verification email if:
-            // 1. The subscriber is no longer pending.
-            // 2. A newer verification token has been issued.
-            if (
-              item.type === "verification" &&
-              (subscriber?.status !== "pending" ||
-                subscriber.verificationTokenHash !== hashToken(payload.token))
-            ) {
+        // No more eligible emails. End the draining loop.
+        if (claimed.length === 0) {
+          break;
+        }
+
+        totalProcessed += claimed.length;
+
+        // Process every email in the claimed batch.
+        for (const item of claimed) {
+          await step.run(`deliver-waitlist-email-${item.id}`, async () => {
+            try {
+              const payload = decryptPayload<EmailPayload>(
+                item.payloadEncrypted,
+              );
+
+              const subscriber = await db.query.waitlistSubscribers.findFirst({
+                where: eq(waitlistSubscribers.id, item.subscriberId),
+              });
+
+              // Do not send an old verification email if:
+              // 1. The subscriber is no longer pending.
+              // 2. A newer verification token has been issued.
+              if (
+                item.type === "verification" &&
+                (subscriber?.status !== "pending" ||
+                  subscriber.verificationTokenHash !== hashToken(payload.token))
+              ) {
+                await db
+                  .update(waitlistEmailOutbox)
+                  .set({
+                    status: "sent",
+                    sentAt: new Date(),
+                    lockedUntil: null,
+                  })
+                  .where(eq(waitlistEmailOutbox.id, item.id));
+
+                return;
+              }
+
+              // Do not send a welcome email if the subscriber
+              // is no longer confirmed.
+              if (
+                item.type === "welcome" &&
+                subscriber?.status !== "confirmed"
+              ) {
+                await db
+                  .update(waitlistEmailOutbox)
+                  .set({
+                    status: "sent",
+                    sentAt: new Date(),
+                    lockedUntil: null,
+                  })
+                  .where(eq(waitlistEmailOutbox.id, item.id));
+
+                return;
+              }
+
+              const emailContent =
+                item.type === "verification"
+                  ? verificationEmail(payload.token)
+                  : welcomeEmail(payload.token);
+
+              // Stable idempotency key:
+              // The same outbox item always uses the same key.
+              // Different outbox items receive different keys.
+              const idempotencyKey = `waitlist-email/${item.id}`;
+
+              const { error } = await resend.emails.send(
+                {
+                  from: `Eaglespress <noreply@${env.DOMAIN}>`,
+                  to: payload.email,
+                  subject: emailContent.subject,
+                  html: emailContent.html,
+                },
+                {
+                  idempotencyKey,
+                },
+              );
+
+              if (error) {
+                throw new Error(error.message);
+              }
+
               await db
                 .update(waitlistEmailOutbox)
                 .set({
                   status: "sent",
                   sentAt: new Date(),
                   lockedUntil: null,
+                  lastError: null,
                 })
                 .where(eq(waitlistEmailOutbox.id, item.id));
+            } catch (error) {
+              const message =
+                error instanceof Error
+                  ? error.message
+                  : "Email delivery failed";
 
-              return;
-            }
+              const attempts = item.attempts + 1;
+              const permanentlyFailed = attempts >= MAX_ATTEMPTS;
 
-            // Do not send a welcome email if the subscriber
-            // is no longer confirmed.
-            if (item.type === "welcome" && subscriber?.status !== "confirmed") {
               await db
                 .update(waitlistEmailOutbox)
                 .set({
-                  status: "sent",
-                  sentAt: new Date(),
+                  status: permanentlyFailed ? "failed" : "pending",
+                  attempts,
+                  nextAttemptAt: new Date(
+                    Date.now() +
+                      Math.min(60 * 60 * 1000, 2 ** attempts * 30_000),
+                  ),
                   lockedUntil: null,
+                  lastError: message.slice(0, 1000),
                 })
                 .where(eq(waitlistEmailOutbox.id, item.id));
 
+              // The outbox now owns retry scheduling.
+              // Do not throw after successfully persisting the retry state.
+              // The next cron execution will claim this item only after
+              // nextAttemptAt has elapsed and will read its updated attempts.
               return;
             }
+          });
+        }
 
-            const emailContent =
-              item.type === "verification"
-                ? verificationEmail(payload.token)
-                : welcomeEmail(payload.token);
-
-            // Stable idempotency key:
-            // The same outbox item always uses the same key.
-            // Different outbox items receive different keys.
-            const idempotencyKey = `waitlist-email/${item.id}`;
-
-            const { error } = await resend.emails.send(
-              {
-                from: `Eaglespress <noreply@${env.DOMAIN}>`,
-                to: payload.email,
-                subject: emailContent.subject,
-                html: emailContent.html,
-              },
-              {
-                idempotencyKey,
-              },
-            );
-
-            if (error) {
-              throw new Error(error.message);
-            }
-
-            await db
-              .update(waitlistEmailOutbox)
-              .set({
-                status: "sent",
-                sentAt: new Date(),
-                lockedUntil: null,
-                lastError: null,
-              })
-              .where(eq(waitlistEmailOutbox.id, item.id));
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : "Email delivery failed";
-
-            const attempts = item.attempts + 1;
-            const permanentlyFailed = attempts >= MAX_ATTEMPTS;
-
-            await db
-              .update(waitlistEmailOutbox)
-              .set({
-                status: permanentlyFailed ? "failed" : "pending",
-                attempts,
-                nextAttemptAt: new Date(
-                  Date.now() + Math.min(60 * 60 * 1000, 2 ** attempts * 30_000),
-                ),
-                lockedUntil: null,
-                lastError: message.slice(0, 1000),
-              })
-              .where(eq(waitlistEmailOutbox.id, item.id));
-
-            // The outbox now owns retry scheduling.
-            // Do not throw after successfully persisting the retry state.
-            // The next cron execution will claim this item only after
-            // nextAttemptAt has elapsed and will read its updated attempts.
-            return;
-          }
-        });
+        // Move to the next batch.
+        // Each iteration has a unique Inngest step ID.
+        batchNumber++;
       }
 
       return {
-        processed: claimed.length,
+        processed: totalProcessed,
+        batches: batchNumber,
       };
     },
   );

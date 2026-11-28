@@ -1409,23 +1409,29 @@ export const fetchNews: InngestFunction.Any = inngest.createFunction(
               continue;
             }
 
-            const events = savedPosts.map((post: SavedPost) => ({
-              id: `article-created-${post.id}`,
+            // ---------------------------------------------------
+            // Events for notification
+            // it is commented out because notificaiton is not
+            // rolled out in Eaglespress v1
+            // ---------------------------------------------------
 
-              name: "article.created",
+            // const events = savedPosts.map((post: SavedPost) => ({
+            //   id: `article-created-${post.id}`,
 
-              data: {
-                postId: post.id,
+            //   name: "article.created",
 
-                categoryId: post.categoryId,
+            //   data: {
+            //     postId: post.id,
 
-                title: post.title,
+            //     categoryId: post.categoryId,
 
-                summary: post.description ?? "",
+            //     title: post.title,
 
-                slug: post.slug,
-              } satisfies ArticleCreatedEventData,
-            }));
+            //     summary: post.description ?? "",
+
+            //     slug: post.slug,
+            //   } satisfies ArticleCreatedEventData,
+            // }));
 
             // --------------------------------------------------------------
             // Temporarily disabled: article.created events are not needed
