@@ -134,13 +134,19 @@ type SavedPost = {
   url: string;
 };
 
-type ArticleCreatedEventData = {
-  postId: string;
-  categoryId: string;
-  title: string;
-  summary: string;
-  slug: string;
-};
+// ---------------------------------
+// this is the notification even type
+// it is commented out because notification
+// is not implemented yet, but it is here for future reference
+// ----------------------------------
+
+// type ArticleCreatedEventData = {
+//   postId: string;
+//   categoryId: string;
+//   title: string;
+//   summary: string;
+//   slug: string;
+// };
 
 /**
  * Errors caused by temporary network conditions during URL
